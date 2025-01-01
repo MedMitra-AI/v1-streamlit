@@ -1,0 +1,22 @@
+streamlit==1.37.0
+pandas==2.2.2
+numpy==1.26.4
+biopython==1.84
+sqlalchemy==2.0.15
+streamlit_option_menu==0.3.2
+openai
+boto3
+# Core Libraries
+pydantic
+python-dotenv
+
+# OpenAI Integration
+langchain
+langchain-core
+
+# Image Processing
+Pillow
+psycopg2-binary
+pdfplumber
+
+requests
