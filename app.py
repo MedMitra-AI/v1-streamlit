@@ -576,7 +576,7 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
 
         if gpt_text:
             st.subheader("Select Your Final Choices Below")
-            st.markdown("Pick from the bullet points.")
+            st.markdown("Pick from the bullet points GPT provided (Case Summary excluded above).")
 
             # Parse "Most Likely Diagnosis"
             diag_section = parse_section(gpt_text, "Most Likely Diagnosis")
@@ -754,7 +754,7 @@ elif tab_selection == "Search Patient Records":
                         st.write("Not provided")
 
                     # Show GPT's text (which won't have 'Case Summary' anymore)
-                    st.markdown("**Medical Advice:**")
+                    st.markdown("**Medical Advice (GPT Output, minus Case Summary):**")
                     st.markdown(record.get('medical_advice','') or "No GPT advice stored.")
 
                     # Show the stored case summary
