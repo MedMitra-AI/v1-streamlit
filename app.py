@@ -10,15 +10,19 @@ import pdfplumber
 import requests
 import streamlit as st
 from PIL import Image
-from pdf2image import convert_from_path
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import boto3
 from openai import OpenAI
 
-client = OpenAI(api_key="sk-proj-aA4in0l2WCEkJXq4yeHAT3BlbkFJmwOhRnH8ypgJpolet2Nb")
+# -------------------------------------------------- #
+#              OPENAI CLIENT CONFIG                  #
+# -------------------------------------------------- #
+client = OpenAI(api_key="sk-proj-aA4in0l2WCEkJXq4yeHAT3BlbkFJmwOhRnH8ypgJpolet2Nb")  # replace with your actual key
 
-# -------------------- Logging Configuration -------------------- #
+# -------------------------------------------------- #
+#                   LOGGING SETUP                    #
+# -------------------------------------------------- #
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - [%(levelname)s] - %(filename)s.%(funcName)s(%(lineno)d) - %(message)s',
@@ -29,22 +33,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# -------------------- Load Environment -------------------- #
+# -------------------------------------------------- #
+#              LOAD ENVIRONMENT VARIABLES            #
+# -------------------------------------------------- #
 load_dotenv()
 
-# -------------------- OpenAI Setup -------------------- #
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-aA4in0l2WCEkJXq4yeHAT3BlbkFJmwOhRnH8ypgJpolet2Nb")
+# -------------------- ENV VARIABLES -------------------- #
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-fallback")
 if not OPENAI_API_KEY:
     logger.warning("OPENAI_API_KEY not set.")
 
-# -------------------- Database Setup (PostgreSQL) -------------------- #
-DATABASE_URI = os.getenv("DATABASE_URI")
+DATABASE_URI = os.getenv("DATABASE_URI")  # e.g. "postgresql://user:pass@host:port/dbname"
 if not DATABASE_URI:
     logger.warning("DATABASE_URI is not set.")
 engine = create_engine(DATABASE_URI, echo=False)
 logger.info("Database engine created.")
 
-# -------------------- AWS S3 Setup -------------------- #
 aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
 aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
 aws_region = os.getenv("AWS_REGION")
@@ -58,7 +62,7 @@ s3_client = boto3.client(
 )
 logger.info("S3 client initialized.")
 
-# -------------------- Department Contexts -------------------- #
+# -------------------- DEPARTMENT CONTEXTS -------------------- #
 contexts = {
     "Cardiology": "Common conditions in cardiology include chest pain, palpitations, shortness of breath, hypertension, syncope.",
     "Pulmonology": "Common conditions in pulmonology include chronic cough, shortness of breath, wheezing, hemoptysis, chest pain.",
@@ -81,17 +85,51 @@ contexts = {
     "Endocrinology": "Common conditions in endocrinology include diabetes, thyroid disorders, adrenal disorders, osteoporosis, hormone imbalances."
 }
 
-# -------------------- Utility Functions -------------------- #
+
+# -------------------- HELPER / UTILITY -------------------- #
+
+def get_content_type(filename):
+    """
+    Return a 'Content-Type' string based on file extension.
+    We'll handle pdf vs. png vs. jpg for simplicity.
+    """
+    fn_lower = filename.lower()
+    if fn_lower.endswith(".pdf"):
+        return "application/pdf"
+    elif fn_lower.endswith(".png"):
+        return "image/png"
+    elif fn_lower.endswith(".jpg") or fn_lower.endswith(".jpeg"):
+        return "image/jpeg"
+    else:
+        return "application/octet-stream"
 
 def upload_to_s3(file_bytes, filename):
+    """
+    Upload file to S3 with the correct ContentType.
+    """
     logger.debug("Uploading file to S3...")
+
     unique_filename = f"{uuid.uuid4()}_{filename}"
-    s3_client.put_object(Bucket=bucket_name, Key=unique_filename, Body=file_bytes, ACL='private')
+    content_type = get_content_type(filename)
+
+    logger.debug(f"File {filename} -> S3 Key: {unique_filename}, Content-Type: {content_type}")
+    logger.debug(f"Upload size: {len(file_bytes)} bytes")
+
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=unique_filename,
+        Body=file_bytes,
+        ContentType=content_type,
+        ACL='private'
+    )
     file_url = f"https://{bucket_name}.s3.{aws_region}.amazonaws.com/{unique_filename}"
     logger.info(f"File uploaded to S3 with key {unique_filename}")
     return file_url
 
 def generate_presigned_url(s3_url, expiration=3600):
+    """
+    Generate a presigned URL to a private object in S3.
+    """
     if not s3_url:
         return None
     try:
@@ -106,35 +144,42 @@ def generate_presigned_url(s3_url, expiration=3600):
         logger.error(f"Error generating presigned URL: {e}")
         return None
 
-def downsample_image(file_obj, max_size=(500, 500), quality=50):
-    file_obj.seek(0)
-    img = Image.open(file_obj)
+def downsample_image(file_bytes, max_size=(500, 500), quality=50):
+    """
+    Takes raw bytes of an uploaded image, compresses it to a smaller JPEG.
+    """
+    buf = io.BytesIO(file_bytes)
+    img = Image.open(buf)
     if img.mode != "RGB":
         img = img.convert("RGB")
     img.thumbnail(max_size)
     out_bytes = io.BytesIO()
     img.save(out_bytes, format="JPEG", quality=quality)
     out_bytes.seek(0)
-    return out_bytes
+    return out_bytes.read()
 
-def encode_image(file_obj):
-    file_obj.seek(0)
-    file_data = file_obj.read()
-    encoded = base64.b64encode(file_data).decode("utf-8")
-    return encoded
+def encode_image(file_bytes):
+    """
+    Convert image bytes to base64 string (if needed for GPT).
+    """
+    return base64.b64encode(file_bytes).decode("utf-8")
 
-def extract_text_from_pdf(pdf_file):
-    logger.debug("Extracting text from PDF...")
-    with pdfplumber.open(pdf_file) as pdf:
-        all_text = ""
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                all_text += page_text + "\n"
-    logger.debug("PDF text extraction complete.")
+def extract_text_from_pdf_bytes(pdf_data: bytes) -> str:
+    """
+    Use pdfplumber on an in-memory bytes object instead of a file pointer.
+    This ensures we don't lose the file pointer or corrupt data.
+    """
+    with io.BytesIO(pdf_data) as mem:
+        with pdfplumber.open(mem) as pdf:
+            all_text = ""
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    all_text += page_text + "\n"
     return all_text
 
-# -------------------- GPT PROMPT -------------------- #
+
+# -------------------- GPT PROMPT FUNCTION -------------------- #
 def get_medical_advice_descriptive(
     department,
     chief_complaint,
@@ -146,11 +191,6 @@ def get_medical_advice_descriptive(
     image_data=None,
     lab_report_text=None
 ):
-    """
-    GPT returns bullet-point style text with a 'Case Summary' heading. 
-    We'll remove the 'Case Summary' portion to avoid duplication 
-    and store it separately.
-    """
     logger.info(f"Generating medical advice for department: {department}, complaint: {chief_complaint}")
     context = contexts.get(department, "")
 
@@ -195,21 +235,21 @@ Please ensure each heading is in this exact format to allow parsing.
         {"role": "user", "content": prompt_text}
     ]
     try:
-        response = client.chat.completions.create(model="gpt-4",
-        messages=messages,
-        max_tokens=1800,
-        temperature=0.7)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            max_tokens=1800,
+            temperature=0.7
+        )
         logger.debug("Received descriptive text from GPT.")
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Error generating medical advice: {e}")
         return ""
 
-# -------------------- PARSING/REMOVAL OF CASE SUMMARY -------------------- #
+
+# -------------------- TEXT PARSING FUNCTIONS -------------------- #
 def parse_section(full_text, section_name):
-    """
-    Extract text for a given heading (e.g. **Case Summary**).
-    """
     pattern = rf"\*\*{section_name}\*\*\s*\n?(.*?)(?=\n\*\*|$)"
     match = re.search(pattern, full_text, flags=re.IGNORECASE|re.DOTALL)
     if match:
@@ -217,10 +257,6 @@ def parse_section(full_text, section_name):
     return ""
 
 def remove_section(full_text, section_name):
-    """
-    Remove the entire heading and content for that section from the text
-    so it won't appear twice.
-    """
     pattern = rf"\*\*{section_name}\*\*\s*\n?(.*?)(?=\n\*\*|$)"
     new_text = re.sub(pattern, "", full_text, flags=re.IGNORECASE|re.DOTALL)
     return new_text.strip()
@@ -235,7 +271,8 @@ def extract_bullet_items(section_text):
                 items.append(item)
     return items
 
-# -------------------- DB FUNCTIONS -------------------- #
+
+# -------------------- DATABASE FUNCTIONS -------------------- #
 def insert_patient_info(
     name,
     age,
@@ -366,8 +403,8 @@ def search_patients(name=None, age=None, gender=None, contact=None):
     logger.debug(f"Search query returned {len(records)} record(s).")
     return records
 
-# -------------------- Streamlit App -------------------- #
 
+# -------------------- STREAMLIT APP -------------------- #
 st.title("MedMitra AI")
 
 tab_selection = st.sidebar.radio(
@@ -382,11 +419,14 @@ tab_selection = st.sidebar.radio(
 
 department = st.sidebar.selectbox("Select Department", list(contexts.keys()))
 
+# Keep track of ephemeral data in session state
 if "patient_data" not in st.session_state:
     st.session_state["patient_data"] = {}
-
 if "gpt_advice_text" not in st.session_state:
     st.session_state["gpt_advice_text"] = ""
+if "gpt_case_summary" not in st.session_state:
+    st.session_state["gpt_case_summary"] = ""
+
 
 # -------------------- 1) PATIENT INFORMATION TAB -------------------- #
 if tab_selection == "Patient Information":
@@ -412,21 +452,23 @@ if tab_selection == "Patient Information":
 
     st.write("Optional: Upload a Lab Report (PDF), Medical Imaging (PNG/JPG), or a Previous Prescription (PDF/PNG/JPG).")
 
-    # Lab Report
+    # Lab Report (PDF)
     lab_report_file = st.file_uploader("Upload Lab Report (PDF)", type=["pdf"])
     lab_report_text = None
     lab_report_url = None
     if lab_report_file:
-        extracted_text = extract_text_from_pdf(lab_report_file)
-        if extracted_text:
-            st.write("Extracted Text from PDF:")
-            st.text_area("Lab Report Data", extracted_text, height=200)
-            lab_report_text = extracted_text
-        else:
-            st.error("Could not extract text from the PDF.")
-
+        # read entire file
         pdf_bytes = lab_report_file.read()
-        lab_report_file.seek(0)
+        # extract text from memory (pdfplumber)
+        lab_report_text = extract_text_from_pdf_bytes(pdf_bytes)
+
+        if lab_report_text:
+            st.write("Extracted Text from PDF:")
+            st.text_area("Lab Report Data", lab_report_text, height=200)
+        else:
+            st.error("Could not extract text from the PDF (or no text found).")
+
+        # now upload exactly those same bytes
         lab_report_url = upload_to_s3(pdf_bytes, lab_report_file.name)
 
     # Medical Imaging
@@ -434,29 +476,30 @@ if tab_selection == "Patient Information":
     image_data = None
     medical_imaging_url = None
     if image_file:
-        downsampled_bytes = downsample_image(image_file, max_size=(500, 500), quality=50)
-        image_data = encode_image(downsampled_bytes)
-        st.image(downsampled_bytes, caption="Downsampled Medical Image", use_column_width=True)
-
-        s3_uploaded_bytes = downsampled_bytes.read()
-        downsampled_bytes.seek(0)
-        medical_imaging_url = upload_to_s3(s3_uploaded_bytes, image_file.name)
+        raw_bytes = image_file.read()
+        # Downsample
+        smaller_img_bytes = downsample_image(raw_bytes, max_size=(500, 500), quality=50)
+        # For GPT usage
+        image_data = encode_image(smaller_img_bytes)
+        st.image(smaller_img_bytes, caption="Downsampled Medical Image", use_column_width=True)
+        # Upload
+        medical_imaging_url = upload_to_s3(smaller_img_bytes, image_file.name)
 
     # Previous Prescription
     prescription_file = st.file_uploader("Upload Previous Prescription (PDF/PNG/JPG)", type=["pdf", "png", "jpg", "jpeg"])
     previous_prescription_url = None
     if prescription_file:
+        prescrip_bytes = prescription_file.read()
+
+        # check if pdf or image
         if prescription_file.type == "application/pdf":
-            file_bytes = prescription_file.read()
-            prescription_file.seek(0)
-            previous_prescription_url = upload_to_s3(file_bytes, prescription_file.name)
+            previous_prescription_url = upload_to_s3(prescrip_bytes, prescription_file.name)
             st.success("Prescription PDF uploaded successfully.")
         else:
-            downsampled_bytes = downsample_image(prescription_file, max_size=(500, 500), quality=50)
-            s3_uploaded_bytes = downsampled_bytes.read()
-            downsampled_bytes.seek(0)
-            previous_prescription_url = upload_to_s3(s3_uploaded_bytes, prescription_file.name)
-            st.image(downsampled_bytes, caption="Downsampled Previous Prescription", use_column_width=True)
+            # It's an image
+            compressed_prescrip = downsample_image(prescrip_bytes, max_size=(500, 500), quality=50)
+            st.image(compressed_prescrip, caption="Downsampled Previous Prescription", use_column_width=True)
+            previous_prescription_url = upload_to_s3(compressed_prescrip, prescription_file.name)
             st.success("Prescription image uploaded successfully.")
 
     if st.button("Save Patient Info"):
@@ -515,6 +558,7 @@ if tab_selection == "Patient Information":
             except Exception as e:
                 st.error(f"Failed to save patient info: {e}")
 
+
 # -------------------- 2) DIAGNOSIS, PROGNOSIS & TREATMENT TAB -------------------- #
 elif tab_selection == "Diagnosis, Prognosis & Treatment":
     st.header(f"{department} - Diagnosis, Prognosis & Treatment")
@@ -537,21 +581,18 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     lab_report_text=patient_data.get("lab_report_text", "")
                 )
 
-            # 1) Extract Case Summary
+            # Extract "Case Summary"
             case_summary_section = parse_section(advice_text, "Case Summary")
 
-            # 2) Remove the entire "Case Summary" portion from the main text
-            #    so it won't appear twice.
+            # Remove "Case Summary" from main text
             advice_text_no_cs = remove_section(advice_text, "Case Summary")
 
             st.session_state["gpt_advice_text"] = advice_text_no_cs
             st.session_state["gpt_case_summary"] = case_summary_section
 
-            # Show only the text WITHOUT the "Case Summary" section
             st.markdown(advice_text_no_cs)
 
-            # Save to DB: medical_advice is the text w/o the case summary
-            # and case_summary is stored separately.
+            # Save to DB
             if "id" in patient_data:
                 try:
                     update_query = text("""
@@ -570,37 +611,26 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                 except Exception as e:
                     st.error(f"DB update error: {e}")
 
-        # Show final selections
+        # Show final bullet picks
         gpt_text = st.session_state.get("gpt_advice_text", "")
         case_summary_text = st.session_state.get("gpt_case_summary", "")
 
         if gpt_text:
             st.subheader("Select Your Final Choices Below")
-            st.markdown("Pick from the bullet points GPT provided (Case Summary excluded above).")
-
-            # Parse "Most Likely Diagnosis"
             diag_section = parse_section(gpt_text, "Most Likely Diagnosis")
             most_likely_items = extract_bullet_items(diag_section)
             final_diagnosis_radio = None
             if most_likely_items:
                 st.markdown("**Most Likely Diagnosis (choose one)**")
-                final_diagnosis_radio = st.radio(
-                    label="",
-                    options=most_likely_items
-                )
+                final_diagnosis_radio = st.radio("", options=most_likely_items)
 
-            # Parse "Other Possible Diagnoses"
             other_diag_section = parse_section(gpt_text, "Other Possible Diagnoses")
             other_diag_list = extract_bullet_items(other_diag_section)
             selected_other_diag = None
             if other_diag_list:
                 st.markdown("**Other Possible Diagnoses (pick one if desired)**")
-                selected_other_diag = st.radio(
-                    label="",
-                    options=["(None)"] + other_diag_list
-                )
+                selected_other_diag = st.radio("", options=["(None)"] + other_diag_list)
 
-            # Parse "Suggested Tests"
             tests_section = parse_section(gpt_text, "Suggested Tests")
             tests_list = extract_bullet_items(tests_section)
             selected_tests = []
@@ -611,7 +641,6 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     if checked:
                         selected_tests.append(test)
 
-            # Parse "Suggested Treatment Plan"
             treat_section = parse_section(gpt_text, "Suggested Treatment Plan")
             treat_list = extract_bullet_items(treat_section)
             selected_treats = []
@@ -622,7 +651,7 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     if checked:
                         selected_treats.append(treat_item)
 
-            # Combine final diagnosis from either "Most Likely" or "Other"
+            # Combine final diagnosis
             final_dx = ""
             if final_diagnosis_radio:
                 final_dx = final_diagnosis_radio
@@ -632,7 +661,6 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
             final_tests_str = ", ".join(selected_tests)
             final_treatment_str = ", ".join(selected_treats)
 
-            # Save final choices + case summary
             if st.button("Save Selections"):
                 pid = patient_data.get("id")
                 if not pid:
@@ -650,6 +678,7 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     except Exception as e:
                         st.error(f"DB update error: {e}")
 
+
 # -------------------- 3) FOLLOW-UP QUESTIONS TAB -------------------- #
 elif tab_selection == "Follow-Up Questions":
     st.header("Follow-Up Questions")
@@ -657,7 +686,11 @@ elif tab_selection == "Follow-Up Questions":
     if "allow_follow_up" not in st.session_state:
         st.session_state["allow_follow_up"] = False
 
-    if st.session_state.get("allow_follow_up"):
+    # Let’s allow follow-up if GPT text was generated
+    if st.session_state.get("gpt_advice_text", ""):
+        st.session_state["allow_follow_up"] = True
+
+    if st.session_state["allow_follow_up"]:
         follow_up_question = st.text_input("Enter Follow-Up Question", key="follow_up_question")
         if st.button("Submit Follow-Up"):
             if follow_up_question:
@@ -678,7 +711,10 @@ elif tab_selection == "Follow-Up Questions":
                         }
                     ]
                     try:
-                        response = client.chat.completions.create(model="gpt-4", messages=messages)
+                        response = client.chat.completions.create(
+                            model="gpt-4",
+                            messages=messages
+                        )
                         return response.choices[0].message.content.strip()
                     except Exception as e:
                         return f"Error from OpenAI: {e}"
@@ -694,6 +730,7 @@ elif tab_selection == "Follow-Up Questions":
                 st.error("Please enter a follow-up question.")
     else:
         st.write("No initial advice generated yet. Go to 'Diagnosis, Prognosis & Treatment' tab first.")
+
 
 # -------------------- 4) SEARCH PATIENT RECORDS TAB -------------------- #
 elif tab_selection == "Search Patient Records":
@@ -716,7 +753,7 @@ elif tab_selection == "Search Patient Records":
             st.success(f"Found {len(records)} record(s)")
             for record in records:
                 with st.expander(f"Record ID: {record['id']} - {record['patient_name']}"):
-                    # Show primary fields
+                    # Show main info
                     st.markdown(f"**Name:** {record['patient_name']}")
                     st.markdown(f"**Age:** {record['age']}")
                     st.markdown(f"**Gender:** {record['gender']}")
@@ -730,34 +767,34 @@ elif tab_selection == "Search Patient Records":
                     if record.get('obg_history'):
                         st.markdown(f"**OBG History:** {record['obg_history']}")
 
-                    # Show final doc-chosen diagnosis, tests, treatments
+                    # Final doc-chosen items
                     st.markdown("**Final Diagnosis (Doc Selected):**")
-                    if record.get('final_diagnosis'):
-                        st.write(f"- {record['final_diagnosis']}")
-                    else:
-                        st.write("Not provided")
+                    final_dx_val = record.get('final_diagnosis', '')
+                    st.write(f"- {final_dx_val}" if final_dx_val else "Not provided")
 
                     st.markdown("**Final Tests (Doc Selected):**")
-                    if record.get('final_tests'):
-                        splitted_tests = [x.strip() for x in record['final_tests'].split(',') if x.strip()]
+                    final_tests_val = record.get('final_tests', '')
+                    if final_tests_val:
+                        splitted_tests = [x.strip() for x in final_tests_val.split(',') if x.strip()]
                         for test in splitted_tests:
                             st.write(f"- {test}")
                     else:
                         st.write("Not provided")
 
                     st.markdown("**Final Treatment Plan (Doc Selected):**")
-                    if record.get('final_treatment_plan'):
-                        splitted_treats = [x.strip() for x in record['final_treatment_plan'].split(',') if x.strip()]
+                    final_treat_val = record.get('final_treatment_plan', '')
+                    if final_treat_val:
+                        splitted_treats = [x.strip() for x in final_treat_val.split(',') if x.strip()]
                         for tr in splitted_treats:
                             st.write(f"- {tr}")
                     else:
                         st.write("Not provided")
 
-                    # Show GPT's text (which won't have 'Case Summary' anymore)
+                    # GPT advice (minus "Case Summary")
                     st.markdown("**Medical Advice (GPT Output, minus Case Summary):**")
                     st.markdown(record.get('medical_advice','') or "No GPT advice stored.")
 
-                    # Show the stored case summary
+                    # Case Summary
                     st.markdown("**Case Summary:**")
                     if record.get('case_summary'):
                         st.write(record['case_summary'])
@@ -766,57 +803,55 @@ elif tab_selection == "Search Patient Records":
 
                     st.markdown(f"**Created At:** {record.get('created_at', '')}")
 
-                    # --- Render Lab Report PDF as Images --- #
+                    # ---------- Lab Report PDF Link / Iframe ----------
                     lab_url = record.get("lab_report_url")
                     if lab_url:
-                        st.markdown("**Lab Report (PDF as images):**")
+                        st.markdown("**Lab Report (PDF):**")
                         presigned_pdf_url = generate_presigned_url(lab_url)
                         if presigned_pdf_url:
-                            try:
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                                    resp = requests.get(presigned_pdf_url)
-                                    tmp_file.write(resp.content)
-                                    tmp_file.flush()
-                                    pdf_path = tmp_file.name
-
-                                pages = convert_from_path(pdf_path, dpi=150)
-                                for i, page_img in enumerate(pages, start=1):
-                                    st.image(page_img, caption=f"Lab Report Page {i}", use_column_width=True)
-                            except Exception as e:
-                                st.error(f"Error converting PDF to images: {e}")
+                            st.write(f"[Open PDF]({presigned_pdf_url})")
+                            st.markdown(
+                                f"""
+                                <iframe src="{presigned_pdf_url}" width="700" height="1000">
+                                This browser does not support PDFs. 
+                                <a href="{presigned_pdf_url}">Download PDF</a>
+                                </iframe>
+                                """,
+                                unsafe_allow_html=True
+                            )
                         else:
                             st.warning("Could not generate a presigned URL for this PDF.")
 
-                    # --- Display medical imaging if available --- #
+                    # ---------- Medical Imaging (PNG/JPG) ----------
                     med_img_url = record.get("medical_imaging_url")
                     if med_img_url:
-                        st.markdown("**Medical Imaging Preview:**")
+                        st.markdown("**Medical Imaging Preview (Image)**")
                         presigned_img_url = generate_presigned_url(med_img_url)
                         if presigned_img_url:
                             st.image(presigned_img_url, use_column_width=True)
                         else:
                             st.warning("Could not generate a presigned URL for this image.")
 
-                    # --- Display the previous prescription if available --- #
+                    # ---------- Previous Prescription Link / Iframe ----------
                     prescription_url = record.get("previous_prescription_url")
                     if prescription_url:
-                        st.markdown("**Previous Prescription Preview:**")
+                        st.markdown("**Previous Prescription:**")
                         presigned_prescription_url = generate_presigned_url(prescription_url)
                         if presigned_prescription_url:
                             if prescription_url.lower().endswith(".pdf"):
-                                try:
-                                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                                        resp = requests.get(presigned_prescription_url)
-                                        tmp_file.write(resp.content)
-                                        tmp_file.flush()
-                                        pdf_path = tmp_file.name
-                                    pages = convert_from_path(pdf_path, dpi=150)
-                                    for i, page_img in enumerate(pages, start=1):
-                                        st.image(page_img, caption=f"Prescription Page {i}", use_column_width=True)
-                                except Exception as e:
-                                    st.error(f"Error converting Prescription PDF to images: {e}")
+                                st.write(f"[Open PDF]({presigned_prescription_url})")
+                                st.markdown(
+                                    f"""
+                                    <iframe src="{presigned_prescription_url}" width="700" height="1000">
+                                    This browser does not support PDFs. 
+                                    <a href="{presigned_prescription_url}">Download PDF</a>
+                                    </iframe>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
                             else:
                                 st.image(presigned_prescription_url, use_column_width=True)
-
+                        else:
+                            st.warning("Could not generate a presigned URL for this prescription.")
         else:
             st.warning("No records found matching the search criteria.")
