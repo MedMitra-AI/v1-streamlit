@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # -------------------- ENV VARIABLES -------------------- #
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-fallback")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-aA4in0l2WCEkJXq4yeHAT3BlbkFJmwOhRnH8ypgJpolet2Nb")
 if not OPENAI_API_KEY:
     logger.warning("OPENAI_API_KEY not set.")
 
@@ -84,7 +84,6 @@ contexts = {
     "General Medicine": "Common conditions in general medicine include fever, unexplained pain, fatigue, weight changes, cough.",
     "Endocrinology": "Common conditions in endocrinology include diabetes, thyroid disorders, adrenal disorders, osteoporosis, hormone imbalances."
 }
-
 
 # -------------------- HELPER / UTILITY -------------------- #
 
@@ -158,29 +157,129 @@ def downsample_image(file_bytes, max_size=(500, 500), quality=50):
     out_bytes.seek(0)
     return out_bytes.read()
 
-def encode_image(file_bytes):
+def encode_image(file_obj):
     """
-    Convert image bytes to base64 string (if needed for GPT).
+    Read a file-like object fully, encode it in base64, then reset pointer.
     """
-    return base64.b64encode(file_bytes).decode("utf-8")
+    file_data = file_obj.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    file_obj.seek(0)
+    return encoded
 
-def extract_text_from_pdf_bytes(pdf_data: bytes) -> str:
+def extract_text_from_pdf(pdf_file):
     """
-    Use pdfplumber on an in-memory bytes object instead of a file pointer.
-    This ensures we don't lose the file pointer or corrupt data.
+    Given a file-like object, extract textual content using pdfplumber.
     """
-    with io.BytesIO(pdf_data) as mem:
-        with pdfplumber.open(mem) as pdf:
-            all_text = ""
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    all_text += page_text + "\n"
+    with pdfplumber.open(pdf_file) as pdf:
+        all_text = ""
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                all_text += page_text + "\n"
     return all_text
 
+# ---------- Example placeholders for analyzing image/prescriptions/lab text ---------- #
+FIXED_PROMPT_IMAGE = (
+    "You are a helpful medical AI. Examine the following medical image. "
+    "Describe any possible findings, anomalies, or relevant clinical interpretations. "
+    "Avoid disclaimers about 'consult a specialist'."
+)
 
-# -------------------- GPT PROMPT FUNCTION -------------------- #
-def get_medical_advice_descriptive(
+def analyze_medical_image(image_data_b64):
+    """
+    Analyze a base64-encoded image using GPT-4-turbo.
+    """
+    response = client.chat.completions.create(
+        model="gpt-4-turbo",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": FIXED_PROMPT_IMAGE},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_data_b64}"}
+                    },
+                ],
+            }
+        ]
+    )
+    return response.choices[0].message.content.strip()
+
+def analyze_lab_report_text(lab_report_text):
+    """
+    Analyze lab report text using GPT-4o model.
+    """
+    messages = [
+        {"role": "system", "content": "You are an expert doctor."},
+        {
+            "role": "user",
+            "content": (
+                "Based on the following patient's data extracted from their medical report, provide:\n"
+                "1. Diagnosis\n2. Prognosis\n3. Treatment recommendations\n\n"
+                f"Lab text:\n{lab_report_text}"
+            ),
+        }
+    ]
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        max_tokens=2048,
+        temperature=0.5
+    )
+    return response.choices[0].message.content.strip()
+
+def analyze_prescription_text_or_image(prescription_content, is_pdf=False):
+    """
+    If PDF text is provided, we use GPT-4o. 
+    If image (base64) is provided, we use GPT-4-turbo.
+    """
+    if is_pdf:
+        # treat prescription_content as text
+        messages = [
+            {"role": "system", "content": "You are a medical assistant analyzing a prescription PDF text."},
+            {
+                "role": "user",
+                "content": (
+                    "Below is the text from a prescription. Summarize any relevant medications, dosages, or instructions:\n\n"
+                    f"{prescription_content}"
+                )
+            }
+        ]
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            max_tokens=1500,
+            temperature=0.5
+        )
+        return response.choices[0].message.content.strip()
+    else:
+        # treat prescription_content as base64 image
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a medical assistant. Analyze the following image (prescription). "
+                        "Extract relevant medications, dosages, or instructions. Avoid disclaimers."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{prescription_content}"}
+                        },
+                    ]
+                }
+            ]
+        )
+        return response.choices[0].message.content.strip()
+
+def get_medical_advice(
     department,
     chief_complaint,
     history_presenting_illness,
@@ -188,19 +287,20 @@ def get_medical_advice_descriptive(
     personal_history,
     family_history,
     obg_history="",
-    image_data=None,
-    lab_report_text=None
+    image_analysis_text="",
+    lab_analysis_text="",
+    prescription_analysis_text=""
 ):
-    logger.info(f"Generating medical advice for department: {department}, complaint: {chief_complaint}")
+    """
+    Combine all analyses + patient's textual histories into one final GPT call.
+    Now updated to include drug dosages and contra-indicative drug warnings.
+    """
     context = contexts.get(department, "")
 
     prompt_text = f"""
-You are a helpful medical assistant specialized in medical diagnosis, prognosis, and treatment planning.
-Include brand names of recommended drugs/dosages in the treatment plan. Avoid disclaimers about specialist follow-ups.
-
-Patient Data:
 Department: {department}
 Context: {context}
+
 Chief Complaint: {chief_complaint}
 History of Presenting Illness: {history_presenting_illness}
 Past History: {past_history}
@@ -208,10 +308,12 @@ Personal History: {personal_history}
 Family History: {family_history}
 OBG History: {obg_history}
 
-Lab Report Analysis (if any): {lab_report_text}
-Medical Image Analysis (if any): {image_data}
+Medical Image Analysis (if any): {image_analysis_text}
+Lab Report Analysis (if any): {lab_analysis_text}
+Prescription Analysis (if any): {prescription_analysis_text}
 
 Return your response in bullet-point style with these headings:
+
 **Results**
 
 **Most Likely Diagnosis**
@@ -223,30 +325,31 @@ Return your response in bullet-point style with these headings:
 **Prognosis**
 - ...
 **Suggested Treatment Plan**
-- ...
+- Include recommended drug dosages and provide warnings about any potential contra-indicative drugs.
+
 **Case Summary**
 (Short concluding summary)
 
-Please ensure each heading is in this exact format to allow parsing.
+Keep the tone clinically relevant. Avoid disclaimers about needing further specialist follow-ups.
 """
 
     messages = [
-        {"role": "system", "content": "You are ChatGPT, a helpful medical assistant."},
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful assistant specialized in medical diagnosis, prognosis, and treatment planning. "
+                "No disclaimers, please."
+            )
+        },
         {"role": "user", "content": prompt_text}
     ]
+
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            max_tokens=1800,
-            temperature=0.7
-        )
-        logger.debug("Received descriptive text from GPT.")
+        response = client.chat.completions.create(model="gpt-4o", messages=messages)
         return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"Error generating medical advice: {e}")
-        return ""
-
+        logging.error(f"Error generating medical advice: {e}")
+        return "Error generating medical advice. Please try again later."
 
 # -------------------- TEXT PARSING FUNCTIONS -------------------- #
 def parse_section(full_text, section_name):
@@ -262,6 +365,9 @@ def remove_section(full_text, section_name):
     return new_text.strip()
 
 def extract_bullet_items(section_text):
+    """
+    Return a list of lines that start with '- '
+    """
     items = []
     for line in section_text.splitlines():
         line = line.strip()
@@ -270,7 +376,6 @@ def extract_bullet_items(section_text):
             if item:
                 items.append(item)
     return items
-
 
 # -------------------- DATABASE FUNCTIONS -------------------- #
 def insert_patient_info(
@@ -403,7 +508,6 @@ def search_patients(name=None, age=None, gender=None, contact=None):
     logger.debug(f"Search query returned {len(records)} record(s).")
     return records
 
-
 # -------------------- STREAMLIT APP -------------------- #
 st.title("MedMitra AI")
 
@@ -426,7 +530,12 @@ if "gpt_advice_text" not in st.session_state:
     st.session_state["gpt_advice_text"] = ""
 if "gpt_case_summary" not in st.session_state:
     st.session_state["gpt_case_summary"] = ""
-
+# For conversation-based follow-up
+if "conversation_history" not in st.session_state:
+    st.session_state["conversation_history"] = ""
+# For suggested questions
+if "suggested_questions" not in st.session_state:
+    st.session_state["suggested_questions"] = ""
 
 # -------------------- 1) PATIENT INFORMATION TAB -------------------- #
 if tab_selection == "Patient Information":
@@ -454,53 +563,65 @@ if tab_selection == "Patient Information":
 
     # Lab Report (PDF)
     lab_report_file = st.file_uploader("Upload Lab Report (PDF)", type=["pdf"])
-    lab_report_text = None
+    lab_report_text = ""
     lab_report_url = None
     if lab_report_file:
-        # read entire file
         pdf_bytes = lab_report_file.read()
-        # extract text from memory (pdfplumber)
-        lab_report_text = extract_text_from_pdf_bytes(pdf_bytes)
+        lab_report_url = upload_to_s3(pdf_bytes, lab_report_file.name)
 
-        if lab_report_text:
+        # Extract text
+        lab_report_file.seek(0)
+        extracted_lab_text = extract_text_from_pdf(lab_report_file)
+        if extracted_lab_text:
             st.write("Extracted Text from PDF:")
-            st.text_area("Lab Report Data", lab_report_text, height=200)
+            st.text_area("Lab Report Data", extracted_lab_text, height=200)
+            lab_report_text = extracted_lab_text
         else:
             st.error("Could not extract text from the PDF (or no text found).")
 
-        # now upload exactly those same bytes
-        lab_report_url = upload_to_s3(pdf_bytes, lab_report_file.name)
-
     # Medical Imaging
-    image_file = st.file_uploader("Upload Medical Imaging (PNG/JPG)", type=["png", "jpg", "jpeg"])
-    image_data = None
+    image_data_b64 = ""
     medical_imaging_url = None
+    image_file = st.file_uploader("Upload Medical Imaging (PNG/JPG)", type=["png", "jpg", "jpeg"])
     if image_file:
         raw_bytes = image_file.read()
-        # Downsample
         smaller_img_bytes = downsample_image(raw_bytes, max_size=(500, 500), quality=50)
-        # For GPT usage
-        image_data = encode_image(smaller_img_bytes)
         st.image(smaller_img_bytes, caption="Downsampled Medical Image", use_column_width=True)
-        # Upload
+
         medical_imaging_url = upload_to_s3(smaller_img_bytes, image_file.name)
 
+        # For GPT analysis
+        file_like = io.BytesIO(smaller_img_bytes)
+        encoded_img = base64.b64encode(file_like.read()).decode("utf-8")
+        image_data_b64 = encoded_img
+
     # Previous Prescription
+    prescription_url = None
+    prescription_text_or_b64 = ""
+    prescription_is_pdf = False
     prescription_file = st.file_uploader("Upload Previous Prescription (PDF/PNG/JPG)", type=["pdf", "png", "jpg", "jpeg"])
-    previous_prescription_url = None
     if prescription_file:
         prescrip_bytes = prescription_file.read()
+        prescription_url = upload_to_s3(prescrip_bytes, prescription_file.name)
 
-        # check if pdf or image
         if prescription_file.type == "application/pdf":
-            previous_prescription_url = upload_to_s3(prescrip_bytes, prescription_file.name)
-            st.success("Prescription PDF uploaded successfully.")
+            prescription_is_pdf = True
+            file_like = io.BytesIO(prescrip_bytes)
+            extracted_prescrip_text = extract_text_from_pdf(file_like)
+            if extracted_prescrip_text:
+                prescription_text_or_b64 = extracted_prescrip_text
+                st.success("Prescription PDF processed successfully.")
+            else:
+                st.warning("No text found in prescription PDF.")
         else:
             # It's an image
             compressed_prescrip = downsample_image(prescrip_bytes, max_size=(500, 500), quality=50)
             st.image(compressed_prescrip, caption="Downsampled Previous Prescription", use_column_width=True)
-            previous_prescription_url = upload_to_s3(compressed_prescrip, prescription_file.name)
-            st.success("Prescription image uploaded successfully.")
+            # Convert to base64
+            file_like = io.BytesIO(compressed_prescrip)
+            encoded_prescrip_img = base64.b64encode(file_like.read()).decode("utf-8")
+            prescription_text_or_b64 = encoded_prescrip_img
+            st.success("Prescription image uploaded & prepared for analysis.")
 
     if st.button("Save Patient Info"):
         if not name:
@@ -530,9 +651,11 @@ if tab_selection == "Patient Information":
                 "obg_history": obg_history if department == "Gynecology" else "",
                 "lab_report_text": lab_report_text,
                 "lab_report_url": lab_report_url,
-                "image_data": image_data,
+                "image_data_b64": image_data_b64,
                 "medical_imaging_url": medical_imaging_url,
-                "previous_prescription_url": previous_prescription_url
+                "prescription_data": prescription_text_or_b64,
+                "prescription_is_pdf": prescription_is_pdf,
+                "previous_prescription_url": prescription_url
             }
 
             try:
@@ -551,7 +674,7 @@ if tab_selection == "Patient Information":
                         obg_history=obg_history if department == "Gynecology" else "",
                         lab_report_url=lab_report_url,
                         medical_imaging_url=medical_imaging_url,
-                        previous_prescription_url=previous_prescription_url
+                        previous_prescription_url=prescription_url
                     )
                     st.session_state["patient_data"]["id"] = new_id
                 st.success(f"Patient info saved successfully with ID: {new_id}")
@@ -568,8 +691,28 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
         st.warning("Please fill out 'Patient Information' first.")
     else:
         if st.button("Get Medical Advice"):
-            with st.spinner("Generating advice..."):
-                advice_text = get_medical_advice_descriptive(
+            with st.spinner("Analyzing labs, images, prescriptions, then generating advice..."):
+                # 1) Image analysis
+                image_analysis_text = ""
+                if patient_data.get("image_data_b64"):
+                    image_analysis_text = analyze_medical_image(patient_data["image_data_b64"])
+
+                # 2) Lab report analysis
+                lab_analysis_text = ""
+                if patient_data.get("lab_report_text"):
+                    lab_analysis_text = analyze_lab_report_text(patient_data["lab_report_text"])
+
+                # 3) Prescription analysis
+                prescription_analysis_text = ""
+                if patient_data.get("prescription_data"):
+                    is_pdf = patient_data["prescription_is_pdf"]
+                    prescription_analysis_text = analyze_prescription_text_or_image(
+                        prescription_content=patient_data["prescription_data"],
+                        is_pdf=is_pdf
+                    )
+
+                # 4) Final advice combining everything
+                advice_text = get_medical_advice(
                     department=patient_data["department"],
                     chief_complaint=patient_data["chief_complaint"],
                     history_presenting_illness=patient_data["history_presenting_illness"],
@@ -577,14 +720,13 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     personal_history=patient_data["personal_history"],
                     family_history=patient_data["family_history"],
                     obg_history=patient_data.get("obg_history", ""),
-                    image_data=patient_data.get("image_data", ""),
-                    lab_report_text=patient_data.get("lab_report_text", "")
+                    image_analysis_text=image_analysis_text,
+                    lab_analysis_text=lab_analysis_text,
+                    prescription_analysis_text=prescription_analysis_text
                 )
 
-            # Extract "Case Summary"
+            # Parse out "Case Summary" if needed
             case_summary_section = parse_section(advice_text, "Case Summary")
-
-            # Remove "Case Summary" from main text
             advice_text_no_cs = remove_section(advice_text, "Case Summary")
 
             st.session_state["gpt_advice_text"] = advice_text_no_cs
@@ -618,21 +760,26 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
         if gpt_text:
             st.subheader("Select Your Final Choices Below")
             diag_section = parse_section(gpt_text, "Most Likely Diagnosis")
+            other_diag_section = parse_section(gpt_text, "Other Possible Diagnoses")
+            tests_section = parse_section(gpt_text, "Suggested Tests")
+            treat_section = parse_section(gpt_text, "Suggested Treatment Plan")
+
+            # Extract bullet items
             most_likely_items = extract_bullet_items(diag_section)
+            other_diag_list = extract_bullet_items(other_diag_section)
+            tests_list = extract_bullet_items(tests_section)
+            treat_list = extract_bullet_items(treat_section)
+
             final_diagnosis_radio = None
             if most_likely_items:
                 st.markdown("**Most Likely Diagnosis (choose one)**")
                 final_diagnosis_radio = st.radio("", options=most_likely_items)
 
-            other_diag_section = parse_section(gpt_text, "Other Possible Diagnoses")
-            other_diag_list = extract_bullet_items(other_diag_section)
             selected_other_diag = None
             if other_diag_list:
                 st.markdown("**Other Possible Diagnoses (pick one if desired)**")
                 selected_other_diag = st.radio("", options=["(None)"] + other_diag_list)
 
-            tests_section = parse_section(gpt_text, "Suggested Tests")
-            tests_list = extract_bullet_items(tests_section)
             selected_tests = []
             if tests_list:
                 st.markdown("**Suggested Tests (check all that apply)**")
@@ -641,8 +788,6 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     if checked:
                         selected_tests.append(test)
 
-            treat_section = parse_section(gpt_text, "Suggested Treatment Plan")
-            treat_list = extract_bullet_items(treat_section)
             selected_treats = []
             if treat_list:
                 st.markdown("**Suggested Treatment Plan (check all that apply)**")
@@ -683,53 +828,169 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
 elif tab_selection == "Follow-Up Questions":
     st.header("Follow-Up Questions")
 
-    if "allow_follow_up" not in st.session_state:
-        st.session_state["allow_follow_up"] = False
+    def compile_patient_context_for_gpt():
+        """
+        Compile the entire relevant patient record + GPT advice + conversation history
+        into one string for GPT context.
+        """
+        patient_data = st.session_state.get("patient_data", {})
+        advice_text = st.session_state.get("gpt_advice_text", "")
+        case_summary = st.session_state.get("gpt_case_summary", "")
+        conversation_history = st.session_state.get("conversation_history", "")
 
-    # Let’s allow follow-up if GPT text was generated
-    if st.session_state.get("gpt_advice_text", ""):
-        st.session_state["allow_follow_up"] = True
+        if not patient_data:
+            return ""
 
-    if st.session_state["allow_follow_up"]:
-        follow_up_question = st.text_input("Enter Follow-Up Question", key="follow_up_question")
-        if st.button("Submit Follow-Up"):
-            if follow_up_question:
-                conversation_history = st.session_state.get("conversation_history", "")
+        context_str = f"""
+        Patient Name: {patient_data.get('name','')}
+        Age: {patient_data.get('age','')}
+        Gender: {patient_data.get('gender','')}
+        Contact Number: {patient_data.get('contact_number','')}
+        Department: {patient_data.get('department','')}
+        Chief Complaint: {patient_data.get('chief_complaint','')}
+        History of Presenting Illness: {patient_data.get('history_presenting_illness','')}
+        Past History: {patient_data.get('past_history','')}
+        Personal History: {patient_data.get('personal_history','')}
+        Family History: {patient_data.get('family_history','')}
+        OBG History: {patient_data.get('obg_history','')}
 
-                def handle_follow_up(convo_history, question):
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a helpful assistant specialized in medical diagnosis, prognosis, and treatment planning. "
-                                "Include brand names and dosages, no disclaimers about specialist follow-ups."
-                            )
-                        },
-                        {
-                            "role": "user",
-                            "content": f"Below is the previous conversation:\n\n{convo_history}\n\nFollow-up Question: {question}"
-                        }
-                    ]
-                    try:
-                        response = client.chat.completions.create(
-                            model="gpt-4",
-                            messages=messages
-                        )
-                        return response.choices[0].message.content.strip()
-                    except Exception as e:
-                        return f"Error from OpenAI: {e}"
+        Lab Report Text (if any): {patient_data.get('lab_report_text','')}
 
-                updated_response = handle_follow_up(conversation_history, follow_up_question)
-                updated_conversation = (
-                    conversation_history
-                    + f"\n\nFollow-up Question: {follow_up_question}\nResponse: {updated_response}"
-                )
-                st.session_state["conversation_history"] = updated_conversation
-                st.write(updated_response)
-            else:
-                st.error("Please enter a follow-up question.")
-    else:
-        st.write("No initial advice generated yet. Go to 'Diagnosis, Prognosis & Treatment' tab first.")
+        ---- GPT Advice So Far ----
+        {advice_text}
+
+        ---- Case Summary (if any) ----
+        {case_summary}
+
+        ---- Conversation So Far ----
+        {conversation_history}
+        """
+
+        return context_str.strip()
+
+    def ask_gpt_followup_question(full_context, question):
+        """
+        Uses GPT-4 for the conversation, referencing entire context.
+        """
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful AI medical assistant. You have access to the patient's entire record, "
+                    "previous GPT advice, and the conversation so far. Provide clinically relevant, concise answers. "
+                    "Use brand names/dosages where appropriate, and do not add disclaimers about specialist follow-ups."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Full Patient Context:\n{full_context}\n\nFollow-Up Question: {question}"
+            }
+        ]
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                temperature=0.5,
+                max_tokens=800
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            return f"Error from OpenAI: {str(e)}"
+
+    def generate_question_suggestions(full_context):
+        """
+        Generate a set of 5 new follow-up questions from different angles.
+        """
+        prompt = f"""
+        You are a helpful AI medical assistant. You've seen the entire patient context, including conversation so far.
+
+        Please propose 5 new, non-repetitive, interesting and relevant follow-up questions a doctor might ask, from different angles
+        (e.g., clarifications on symptoms, comorbid conditions, medication side effects, social or lifestyle factors, next steps in testing, etc.).
+        Avoid duplicating previous questions from the conversation.
+
+        Return them either as a numbered list or bullet list.
+
+        FULL CONTEXT:
+        {full_context}
+        """
+
+        messages = [
+            {"role": "system", "content": "You are ChatGPT, a helpful AI medical assistant."},
+            {"role": "user", "content": prompt}
+        ]
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=400
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            return f"Error from OpenAI: {str(e)}"
+
+    # Ensure patient info is saved
+    patient_data = st.session_state.get("patient_data", {})
+    if not patient_data:
+        st.warning("No patient information available. Please fill out 'Patient Information' first.")
+        st.stop()
+
+    st.write("Use this chatbot interface to ask any follow-up questions regarding the patient's history, labs, images, prescriptions, or previous GPT advice.")
+
+    # 1) Generate suggestions
+    if st.button("Generate Suggested Follow-Up Questions"):
+        full_context = compile_patient_context_for_gpt()
+        suggestions_text = generate_question_suggestions(full_context)
+        st.session_state["suggested_questions"] = suggestions_text
+
+    # Show suggestions
+    suggestions = st.session_state.get("suggested_questions", "")
+    if suggestions:
+        st.markdown("### Suggested Follow-Up Questions")
+        st.markdown(suggestions)
+
+    # 2) Let user type a question or pick from suggestions
+    st.write("---")
+    st.subheader("Ask a Follow-Up Question")
+    follow_up_question = st.text_input("Type your question here")
+
+    # Parse suggestions from bullet or numbered lines
+    suggestion_lines = []
+    for line in suggestions.splitlines():
+        line = line.strip()
+        # If line starts with "- " or a digit + punctuation
+        if line.startswith("- ") or re.match(r"^\d+[.)]\s", line):
+            suggestion_lines.append(line)
+
+    selected_suggestion = st.selectbox("...or pick one of the suggestions above", ["(None)"] + suggestion_lines)
+
+    if st.button("Submit Follow-Up"):
+        question_to_ask = follow_up_question.strip()
+        if selected_suggestion != "(None)" and not question_to_ask:
+            # If user didn't type anything, but selected a suggestion
+            question_to_ask = re.sub(r"^(\- |\d+[.)]\s)", "", selected_suggestion).strip()
+
+        if question_to_ask:
+            full_context = compile_patient_context_for_gpt()
+            response_from_gpt = ask_gpt_followup_question(full_context, question_to_ask)
+
+            # 4) Update conversation history
+            current_history = st.session_state.get("conversation_history", "")
+            updated_conversation = (
+                current_history
+                + f"\n\nDoctor's Question: {question_to_ask}\nAI's Answer: {response_from_gpt}"
+            )
+            st.session_state["conversation_history"] = updated_conversation
+
+            # 5) Show GPT’s response
+            st.markdown("### Response")
+            st.write(response_from_gpt)
+
+            # Clear typed question
+            st.session_state["follow_up_question"] = ""
+        else:
+            st.warning("Please type or select a question before clicking 'Submit Follow-Up'.")
 
 
 # -------------------- 4) SEARCH PATIENT RECORDS TAB -------------------- #
