@@ -1,3 +1,5 @@
+from datetime import time
+import time
 import os
 import io
 import re
@@ -21,41 +23,29 @@ from sqlalchemy import text
 # -------------------------------------------------- #
 #              OPENAI CLIENT CONFIG                  #
 # -------------------------------------------------- #
-client = OpenAI(api_key="sk-proj-aA4in0l2WCEkJXq4yeHAT3BlbkFJmwOhRnH8ypgJpolet2Nb")  # replace with your actual key
+client = OpenAI(api_key="sk-proj-aA4in0l2WCEkJXq4yeHAT3BlbkFJmwOhRnH8ypgJpolet2Nb")
 
-# -------------------------------------------------- #
-#                   LOGGING SETUP                    #
-# -------------------------------------------------- #
+# ---------------------------------------
+#    LOGGING AND ENVIRONMENT SETUP
+# ---------------------------------------
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - [%(levelname)s] - %(filename)s.%(funcName)s(%(lineno)d) - %(message)s',
-    handlers=[
-        logging.FileHandler("medmitra.log", mode='a'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler("medmitra.log", mode='a'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-# -------------------------------------------------- #
-#              LOAD ENVIRONMENT VARIABLES            #
-# -------------------------------------------------- #
 load_dotenv()
 
-# -------------------- ENV VARIABLES -------------------- #
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-aA4in0l2WCEkJXq4yeHAT3BlbkFJmwOhRnH8ypgJpolet2Nb")
-if not OPENAI_API_KEY:
-    logger.warning("OPENAI_API_KEY not set.")
-
-DATABASE_URI = os.getenv("DATABASE_URI")  # e.g. "postgresql://user:pass@host:port/dbname"
+DATABASE_URI = os.getenv("DATABASE_URI", "postgresql://user:pass@localhost/dbname")
 if not DATABASE_URI:
-    logger.warning("DATABASE_URI is not set.")
+    logger.warning("DATABASE_URI not set.")
 engine = create_engine(DATABASE_URI, echo=False)
-logger.info("Database engine created.")
 
-aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
-aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-aws_region = os.getenv("AWS_REGION")
-bucket_name = os.getenv("AWS_BUCKET_NAME")
+aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "YOUR_AWS_ACCESS_KEY")
+aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "YOUR_AWS_SECRET")
+aws_region = os.getenv("AWS_REGION", "us-east-1")
+bucket_name = os.getenv("AWS_BUCKET_NAME", "your-s3-bucket")
 
 s3_client = boto3.client(
     's3',
@@ -63,9 +53,10 @@ s3_client = boto3.client(
     aws_access_key_id=aws_access_key_id,
     aws_secret_access_key=aws_secret_access_key
 )
-logger.info("S3 client initialized.")
 
-# -------------------- DEPARTMENT CONTEXTS -------------------- #
+# ---------------------------------------
+#        DEPARTMENT CONTEXTS
+# ---------------------------------------
 contexts = {
     "Cardiology": "Common conditions in cardiology include chest pain, palpitations, shortness of breath, hypertension, syncope.",
     "Pulmonology": "Common conditions in pulmonology include chronic cough, shortness of breath, wheezing, hemoptysis, chest pain.",
@@ -87,14 +78,10 @@ contexts = {
     "General Medicine": "Common conditions in general medicine include fever, unexplained pain, fatigue, weight changes, cough.",
     "Endocrinology": "Common conditions in endocrinology include diabetes, thyroid disorders, adrenal disorders, osteoporosis, hormone imbalances."
 }
-
-# -------------------- HELPER / UTILITY -------------------- #
-
+# ---------------------------------------
+#        HELPER / UTILITY FUNCTIONS
+# ---------------------------------------
 def get_content_type(filename):
-    """
-    Return a 'Content-Type' string based on file extension.
-    We'll handle pdf vs. png vs. jpg for simplicity.
-    """
     fn_lower = filename.lower()
     if fn_lower.endswith(".pdf"):
         return "application/pdf"
@@ -106,17 +93,8 @@ def get_content_type(filename):
         return "application/octet-stream"
 
 def upload_to_s3(file_bytes, filename):
-    """
-    Upload file to S3 with the correct ContentType.
-    """
-    logger.debug("Uploading file to S3...")
-
     unique_filename = f"{uuid.uuid4()}_{filename}"
     content_type = get_content_type(filename)
-
-    logger.debug(f"File {filename} -> S3 Key: {unique_filename}, Content-Type: {content_type}")
-    logger.debug(f"Upload size: {len(file_bytes)} bytes")
-
     s3_client.put_object(
         Bucket=bucket_name,
         Key=unique_filename,
@@ -124,14 +102,9 @@ def upload_to_s3(file_bytes, filename):
         ContentType=content_type,
         ACL='private'
     )
-    file_url = f"https://{bucket_name}.s3.{aws_region}.amazonaws.com/{unique_filename}"
-    logger.info(f"File uploaded to S3 with key {unique_filename}")
-    return file_url
+    return f"https://{bucket_name}.s3.{aws_region}.amazonaws.com/{unique_filename}"
 
 def generate_presigned_url(s3_url, expiration=3600):
-    """
-    Generate a presigned URL to a private object in S3.
-    """
     if not s3_url:
         return None
     try:
@@ -147,9 +120,6 @@ def generate_presigned_url(s3_url, expiration=3600):
         return None
 
 def downsample_image(file_bytes, max_size=(500, 500), quality=50):
-    """
-    Takes raw bytes of an uploaded image, compresses it to a smaller JPEG.
-    """
     buf = io.BytesIO(file_bytes)
     img = Image.open(buf)
     if img.mode != "RGB":
@@ -160,19 +130,7 @@ def downsample_image(file_bytes, max_size=(500, 500), quality=50):
     out_bytes.seek(0)
     return out_bytes.read()
 
-def encode_image(file_obj):
-    """
-    Read a file-like object fully, encode it in base64, then reset pointer.
-    """
-    file_data = file_obj.read()
-    encoded = base64.b64encode(file_data).decode("utf-8")
-    file_obj.seek(0)
-    return encoded
-
 def extract_text_from_pdf(pdf_file):
-    """
-    Given a file-like object, extract textual content using pdfplumber.
-    """
     with pdfplumber.open(pdf_file) as pdf:
         all_text = ""
         for page in pdf.pages:
@@ -181,7 +139,187 @@ def extract_text_from_pdf(pdf_file):
                 all_text += page_text + "\n"
     return all_text
 
-# ---------- Example placeholders for analyzing image/prescriptions/lab text ---------- #
+# ---------------------------------------
+#        DATABASE FUNCTIONS
+# ---------------------------------------
+def insert_patient_info(
+    name,
+    age,
+    gender,
+    contact_number,
+    department,
+    chief_complaint,
+    history_presenting_illness,
+    past_history,
+    personal_history,
+    family_history,
+    obg_history,
+    lab_report_url,
+    medical_imaging_url,
+    previous_prescription_url=None,
+    medical_advice=None,
+    case_summary=None
+):
+    logger.info(f"Inserting new patient record into DB for: {name}, age: {age}")
+    insert_query = text("""
+        INSERT INTO patient_info (
+            patient_name,
+            age,
+            gender,
+            contact_number,
+            department,
+            chief_complaint,
+            history_of_presenting_illness,
+            past_history,
+            personal_history,
+            family_history,
+            obg_history,
+            lab_report_url,
+            medical_imaging_url,
+            previous_prescription_url,
+            medical_advice,
+            case_summary
+        ) VALUES (
+            :patient_name,
+            :age,
+            :gender,
+            :contact_number,
+            :department,
+            :chief_complaint,
+            :history_of_presenting_illness,
+            :past_history,
+            :personal_history,
+            :family_history,
+            :obg_history,
+            :lab_report_url,
+            :medical_imaging_url,
+            :previous_prescription_url,
+            :medical_advice,
+            :case_summary
+        ) RETURNING id
+    """)
+
+    with engine.begin() as conn:
+        result = conn.execute(insert_query, {
+            'patient_name': name,
+            'age': age,
+            'gender': gender,
+            'contact_number': contact_number,
+            'department': department,
+            'chief_complaint': chief_complaint,
+            'history_of_presenting_illness': history_presenting_illness,
+            'past_history': past_history,
+            'personal_history': personal_history,
+            'family_history': family_history,
+            'obg_history': obg_history,
+            'lab_report_url': lab_report_url,
+            'medical_imaging_url': medical_imaging_url,
+            'previous_prescription_url': previous_prescription_url,
+            'medical_advice': medical_advice,
+            'case_summary': case_summary
+        })
+        new_id = result.fetchone()[0]
+    logger.info(f"Patient record inserted successfully with ID: {new_id}")
+    return new_id
+
+def update_patient_info(
+    patient_id, name, age, gender, contact_number, department,
+    chief_complaint, history_presenting_illness, past_history,
+    personal_history, family_history, obg_history=None,
+    lab_report_url=None, medical_imaging_url=None, previous_prescription_url=None
+):
+    query = text("""
+        UPDATE patient_info
+        SET
+            patient_name = :name,
+            age = :age,
+            gender = :gender,
+            contact_number = :contact,
+            department = :department,
+            chief_complaint = :chief,
+            history_of_presenting_illness = :hpi,
+            past_history = :past,
+            personal_history = :personal,
+            family_history = :family,
+            obg_history = :obg,
+            lab_report_url = :lab_url,
+            medical_imaging_url = :img_url,
+            previous_prescription_url = :prescrip_url
+        WHERE id = :pid
+    """)
+    with engine.begin() as conn:
+        conn.execute(query, {
+            'name': name,
+            'age': age,
+            'gender': gender,
+            'contact': contact_number,
+            'department': department,
+            'chief': chief_complaint,
+            'hpi': history_presenting_illness,
+            'past': past_history,
+            'personal': personal_history,
+            'family': family_history,
+            'obg': obg_history,
+            'lab_url': lab_report_url,
+            'img_url': medical_imaging_url,
+            'prescrip_url': previous_prescription_url,
+            'pid': patient_id
+        })
+
+def update_patient_final_choices(
+    patient_id, 
+    final_diagnosis, 
+    final_tests, 
+    final_treatment_plan,
+    case_summary=None
+):
+    logger.info(f"Updating final choices for patient ID: {patient_id}")
+    update_query = text("""
+        UPDATE patient_info
+        SET final_diagnosis = :final_diagnosis,
+            final_tests = :final_tests,
+            final_treatment_plan = :final_treatment_plan,
+            case_summary = :case_summary
+        WHERE id = :id
+    """)
+    with engine.begin() as conn:
+        conn.execute(update_query, {
+            'final_diagnosis': final_diagnosis,
+            'final_tests': final_tests,
+            'final_treatment_plan': final_treatment_plan,
+            'case_summary': case_summary,
+            'id': patient_id
+        })
+    logger.info(f"Final diagnosis/tests/treatment updated for patient ID: {patient_id}")
+
+def search_patients(name=None, age=None, gender=None, contact=None):
+    logger.debug("Searching patient records...")
+    query = "SELECT * FROM patient_info WHERE 1=1"
+    params = {}
+
+    if name:
+        query += " AND patient_name ILIKE :name"
+        params['name'] = f"%{name}%"
+    if age and age > 0:
+        query += " AND age = :age"
+        params['age'] = age
+    if gender and gender not in ["Select Gender", None, ""]:
+        query += " AND gender = :gender"
+        params['gender'] = gender
+    if contact:
+        query += " AND contact_number ILIKE :contact"
+        params['contact'] = f"%{contact}%"
+
+    with engine.connect() as conn:
+        result = conn.execute(text(query), params)
+        records = result.mappings().all()
+    logger.debug(f"Search query returned {len(records)} record(s).")
+    return records
+
+# ---------------------------------------
+#  GPT-LIKE FUNCTIONS (STUB EXAMPLES)
+# ---------------------------------------
+
 FIXED_PROMPT_IMAGE = (
     "You are a helpful medical AI. Examine the following medical image. "
     "Describe any possible findings, anomalies, or relevant clinical interpretations. "
@@ -282,57 +420,6 @@ def analyze_prescription_text_or_image(prescription_content, is_pdf=False):
         )
         return response.choices[0].message.content.strip()
 
-def generate_prescription(diagnosis, tests, treatments, patient_info=None):
-    """
-    Generate a prescription using OpenAI's GPT model.
-    """
-    patient_info_str = (
-        f"Patient Name: {patient_info.get('name', 'Unknown')}, "
-        f"Age: {patient_info.get('age', 'Unknown')}, "
-        f"Gender: {patient_info.get('gender', 'Unknown')}" if patient_info else "No patient info provided."
-    )
-    
-    prompt = f"""
-    You are a medical expert. Based on the following details, generate a prescription:
-    Diagnosis: {diagnosis}
-    Patient Info: {patient_info_str}
-    Recommended Tests: {", ".join(tests)}
-    Proposed Treatments: {", ".join(treatments)}
-
-    Provide the following in your response:
-    1. A concise diagnosis.
-    2. A list of drugs and dosages (name, strength, frequency, and duration).
-    3. Specific instructions on how to take each drug.
-    4. Any follow-up instructions (e.g., when to return, what to monitor).
-    5. A list of recommended tests, if applicable.
-
-    Format your response as a JSON object with keys: 
-    'diagnosis', 'drugs', 'instructions', 'tests', 'follow_up'.
-    """
-    try:
-        messages = [
-            {"role": "system", "content": "You are ChatGPT, a helpful medical assistant."},
-            {"role": "user", "content": prompt}
-        ]
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=messages,
-            max_tokens=1800,
-            temperature=0.7
-        )
-        gpt_content = response.choices[0].message.content.strip()
-        import json
-        prescription = json.loads(gpt_content)
-        return prescription
-    except Exception as e:
-        return {
-            "diagnosis": diagnosis,
-            "drugs": [],
-            "instructions": [],
-            "tests": tests,
-            "follow_up": "Follow up with your doctor."
-        }
-
 def get_medical_advice(
     department,
     chief_complaint,
@@ -408,7 +495,57 @@ Keep the tone clinically relevant. Avoid disclaimers about needing further speci
         logging.error(f"Error generating medical advice: {e}")
         return "Error generating medical advice. Please try again later."
 
-# -------------------- TEXT PARSING FUNCTIONS -------------------- #
+def generate_prescription(diagnosis, tests, treatments, patient_info=None):
+    """
+    Generate a prescription using OpenAI's GPT model.
+    """
+    patient_info_str = (
+        f"Patient Name: {patient_info.get('name', 'Unknown')}, "
+        f"Age: {patient_info.get('age', 'Unknown')}, "
+        f"Gender: {patient_info.get('gender', 'Unknown')}" if patient_info else "No patient info provided."
+    )
+    
+    prompt = f"""
+    You are a medical expert. Based on the following details, generate a prescription:
+    Diagnosis: {diagnosis}
+    Patient Info: {patient_info_str}
+    Recommended Tests: {", ".join(tests)}
+    Proposed Treatments: {", ".join(treatments)}
+
+    Provide the following in your response:
+    1. A concise diagnosis.
+    2. A list of drugs and dosages (name, strength, frequency, and duration).
+    3. Specific instructions on how to take each drug.
+    4. Any follow-up instructions (e.g., when to return, what to monitor).
+    5. A list of recommended tests, if applicable.
+
+    Format your response as a JSON object with keys: 
+    'diagnosis', 'drugs', 'instructions', 'tests', 'follow_up'.
+    """
+    try:
+        messages = [
+            {"role": "system", "content": "You are ChatGPT, a helpful medical assistant."},
+            {"role": "user", "content": prompt}
+        ]
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=messages,
+            max_tokens=1800,
+            temperature=0.7
+        )
+        gpt_content = response.choices[0].message.content.strip()
+        import json
+        prescription = json.loads(gpt_content)
+        return prescription
+    except Exception as e:
+        return {
+            "diagnosis": diagnosis,
+            "drugs": [],
+            "instructions": [],
+            "tests": tests,
+            "follow_up": "Follow up with your doctor."
+        }
+
 def parse_section(full_text, section_name):
     pattern = rf"\*\*{section_name}\*\*\s*\n?(.*?)(?=\n\*\*|$)"
     match = re.search(pattern, full_text, flags=re.IGNORECASE|re.DOTALL)
@@ -418,154 +555,19 @@ def parse_section(full_text, section_name):
 
 def remove_section(full_text, section_name):
     pattern = rf"\*\*{section_name}\*\*\s*\n?(.*?)(?=\n\*\*|$)"
-    new_text = re.sub(pattern, "", full_text, flags=re.IGNORECASE|re.DOTALL)
-    return new_text.strip()
+    return re.sub(pattern, "", full_text, flags=re.IGNORECASE|re.DOTALL).strip()
 
 def extract_bullet_items(section_text):
-    """
-    Return a list of lines that start with '- '
-    """
     items = []
     for line in section_text.splitlines():
         line = line.strip()
         if line.startswith("- "):
-            item = line[2:].strip()
-            if item:
-                items.append(item)
+            items.append(line[2:].strip())
     return items
 
-# -------------------- DATABASE FUNCTIONS -------------------- #
-def insert_patient_info(
-    name,
-    age,
-    gender,
-    contact_number,
-    department,
-    chief_complaint,
-    history_presenting_illness,
-    past_history,
-    personal_history,
-    family_history,
-    obg_history,
-    lab_report_url,
-    medical_imaging_url,
-    previous_prescription_url=None,
-    medical_advice=None,
-    case_summary=None
-):
-    logger.info(f"Inserting new patient record into DB for: {name}, age: {age}")
-    insert_query = text("""
-        INSERT INTO patient_info (
-            patient_name,
-            age,
-            gender,
-            contact_number,
-            department,
-            chief_complaint,
-            history_of_presenting_illness,
-            past_history,
-            personal_history,
-            family_history,
-            obg_history,
-            lab_report_url,
-            medical_imaging_url,
-            previous_prescription_url,
-            medical_advice,
-            case_summary
-        ) VALUES (
-            :patient_name,
-            :age,
-            :gender,
-            :contact_number,
-            :department,
-            :chief_complaint,
-            :history_of_presenting_illness,
-            :past_history,
-            :personal_history,
-            :family_history,
-            :obg_history,
-            :lab_report_url,
-            :medical_imaging_url,
-            :previous_prescription_url,
-            :medical_advice,
-            :case_summary
-        ) RETURNING id
-    """)
-
-    with engine.begin() as conn:
-        result = conn.execute(insert_query, {
-            'patient_name': name,
-            'age': age,
-            'gender': gender,
-            'contact_number': contact_number,
-            'department': department,
-            'chief_complaint': chief_complaint,
-            'history_of_presenting_illness': history_presenting_illness,
-            'past_history': past_history,
-            'personal_history': personal_history,
-            'family_history': family_history,
-            'obg_history': obg_history,
-            'lab_report_url': lab_report_url,
-            'medical_imaging_url': medical_imaging_url,
-            'previous_prescription_url': previous_prescription_url,
-            'medical_advice': medical_advice,
-            'case_summary': case_summary
-        })
-        new_id = result.fetchone()[0]
-    logger.info(f"Patient record inserted successfully with ID: {new_id}")
-    return new_id
-
-def update_patient_final_choices(
-    patient_id, 
-    final_diagnosis, 
-    final_tests, 
-    final_treatment_plan,
-    case_summary=None
-):
-    logger.info(f"Updating final choices for patient ID: {patient_id}")
-    update_query = text("""
-        UPDATE patient_info
-        SET final_diagnosis = :final_diagnosis,
-            final_tests = :final_tests,
-            final_treatment_plan = :final_treatment_plan,
-            case_summary = :case_summary
-        WHERE id = :id
-    """)
-    with engine.begin() as conn:
-        conn.execute(update_query, {
-            'final_diagnosis': final_diagnosis,
-            'final_tests': final_tests,
-            'final_treatment_plan': final_treatment_plan,
-            'case_summary': case_summary,
-            'id': patient_id
-        })
-    logger.info(f"Final diagnosis/tests/treatment updated for patient ID: {patient_id}")
-
-def search_patients(name=None, age=None, gender=None, contact=None):
-    logger.debug("Searching patient records...")
-    query = "SELECT * FROM patient_info WHERE 1=1"
-    params = {}
-
-    if name:
-        query += " AND patient_name ILIKE :name"
-        params['name'] = f"%{name}%"
-    if age and age > 0:
-        query += " AND age = :age"
-        params['age'] = age
-    if gender and gender not in ["Select Gender", None, ""]:
-        query += " AND gender = :gender"
-        params['gender'] = gender
-    if contact:
-        query += " AND contact_number ILIKE :contact"
-        params['contact'] = f"%{contact}%"
-
-    with engine.connect() as conn:
-        result = conn.execute(text(query), params)
-        records = result.mappings().all()
-    logger.debug(f"Search query returned {len(records)} record(s).")
-    return records
-
-# -------------------- STREAMLIT APP -------------------- #
+# ---------------------------------------
+#          STREAMLIT APP LAYOUT
+# ---------------------------------------
 st.title("MedMitra AI")
 
 tab_selection = st.sidebar.radio(
@@ -573,7 +575,7 @@ tab_selection = st.sidebar.radio(
     [
         "Patient Information",
         "Diagnosis, Prognosis & Treatment",
-        "Follow-Up Questions",
+        # Removed "Follow-Up Questions" for brevity
         "Search Patient Records",
         "Prescription Writing"
     ]
@@ -581,21 +583,25 @@ tab_selection = st.sidebar.radio(
 
 department = st.sidebar.selectbox("Select Department", list(contexts.keys()))
 
-# Keep track of ephemeral data in session state
+# Session placeholders for ephemeral data
 if "patient_data" not in st.session_state:
     st.session_state["patient_data"] = {}
 if "gpt_advice_text" not in st.session_state:
     st.session_state["gpt_advice_text"] = ""
 if "gpt_case_summary" not in st.session_state:
     st.session_state["gpt_case_summary"] = ""
-# For conversation-based follow-up
 if "conversation_history" not in st.session_state:
     st.session_state["conversation_history"] = ""
-# For suggested questions
 if "suggested_questions" not in st.session_state:
     st.session_state["suggested_questions"] = ""
+if "search_results" not in st.session_state:
+    st.session_state["search_results"] = []
+if "edit_id" not in st.session_state:
+    st.session_state["edit_id"] = None
 
-# -------------------- 1) PATIENT INFORMATION TAB -------------------- #
+# ---------------------------------------
+# 1) PATIENT INFORMATION TAB
+# ---------------------------------------
 if tab_selection == "Patient Information":
     st.header(f"{department} - Patient Information")
 
@@ -617,69 +623,57 @@ if tab_selection == "Patient Information":
     if department == "Gynecology":
         obg_history = st.text_input("OBG History", value="")
 
-    st.write("Optional: Upload a Lab Report (PDF), Medical Imaging (PNG/JPG), or a Previous Prescription (PDF/PNG/JPG).")
+    st.write("Optional: Upload Lab Report (PDF), Medical Imaging (PNG/JPG), or Prescription (PDF/PNG/JPG).")
 
-    # Lab Report (PDF)
-    lab_report_file = st.file_uploader("Upload Lab Report (PDF)", type=["pdf"])
+    # Lab Report
+    lab_report_file = st.file_uploader("Lab Report (PDF)", type=["pdf"])
     lab_report_text = ""
     lab_report_url = None
     if lab_report_file:
         pdf_bytes = lab_report_file.read()
         lab_report_url = upload_to_s3(pdf_bytes, lab_report_file.name)
-
-        # Extract text
         lab_report_file.seek(0)
-        extracted_lab_text = extract_text_from_pdf(lab_report_file)
-        if extracted_lab_text:
-            st.write("Extracted Text from PDF:")
-            st.text_area("Lab Report Data", extracted_lab_text, height=200)
-            lab_report_text = extracted_lab_text
-        else:
-            st.error("Could not extract text from the PDF (or no text found).")
+        extracted_text = extract_text_from_pdf(lab_report_file)
+        if extracted_text:
+            st.text_area("Extracted Lab Text", extracted_text, height=200)
+            lab_report_text = extracted_text
 
     # Medical Imaging
     image_data_b64 = ""
     medical_imaging_url = None
-    image_file = st.file_uploader("Upload Medical Imaging (PNG/JPG)", type=["png", "jpg", "jpeg"])
+    image_file = st.file_uploader("Medical Imaging (PNG/JPG)", type=["png","jpg","jpeg"])
     if image_file:
         raw_bytes = image_file.read()
-        smaller_img_bytes = downsample_image(raw_bytes, max_size=(500, 500), quality=50)
-        st.image(smaller_img_bytes, caption="Downsampled Medical Image", use_column_width=True)
+        downsized = downsample_image(raw_bytes)
+        st.image(downsized, caption="Resized Imaging", use_column_width=True)
+        medical_imaging_url = upload_to_s3(downsized, image_file.name)
 
-        medical_imaging_url = upload_to_s3(smaller_img_bytes, image_file.name)
-
-        # For GPT analysis
-        file_like = io.BytesIO(smaller_img_bytes)
-        encoded_img = base64.b64encode(file_like.read()).decode("utf-8")
-        image_data_b64 = encoded_img
+        # base64 for GPT usage
+        b64file = io.BytesIO(downsized)
+        image_data_b64 = base64.b64encode(b64file.read()).decode("utf-8")
 
     # Previous Prescription
     prescription_url = None
     prescription_text_or_b64 = ""
     prescription_is_pdf = False
-    prescription_file = st.file_uploader("Upload Previous Prescription (PDF/PNG/JPG)", type=["pdf", "png", "jpg", "jpeg"])
-    if prescription_file:
-        prescrip_bytes = prescription_file.read()
-        prescription_url = upload_to_s3(prescrip_bytes, prescription_file.name)
+    prescrip_file = st.file_uploader("Previous Prescription (PDF/PNG/JPG)", type=["pdf","png","jpg","jpeg"])
+    if prescrip_file:
+        fbytes = prescrip_file.read()
+        prescription_url = upload_to_s3(fbytes, prescrip_file.name)
 
-        if prescription_file.type == "application/pdf":
+        if prescrip_file.type == "application/pdf":
             prescription_is_pdf = True
-            file_like = io.BytesIO(prescrip_bytes)
-            extracted_prescrip_text = extract_text_from_pdf(file_like)
-            if extracted_prescrip_text:
-                prescription_text_or_b64 = extracted_prescrip_text
-                st.success("Prescription PDF processed successfully.")
-            else:
-                st.warning("No text found in prescription PDF.")
+            pfile = io.BytesIO(fbytes)
+            extracted_prescription = extract_text_from_pdf(pfile)
+            if extracted_prescription:
+                prescription_text_or_b64 = extracted_prescription
+                st.success("Prescription PDF text extracted.")
         else:
-            # It's an image
-            compressed_prescrip = downsample_image(prescrip_bytes, max_size=(500, 500), quality=50)
-            st.image(compressed_prescrip, caption="Downsampled Previous Prescription", use_column_width=True)
-            # Convert to base64
-            file_like = io.BytesIO(compressed_prescrip)
-            encoded_prescrip_img = base64.b64encode(file_like.read()).decode("utf-8")
-            prescription_text_or_b64 = encoded_prescrip_img
-            st.success("Prescription image uploaded & prepared for analysis.")
+            cpres = downsample_image(fbytes)
+            st.image(cpres, caption="Prescription Image", use_column_width=True)
+            b64img = base64.b64encode(cpres).decode("utf-8")
+            prescription_text_or_b64 = b64img
+            st.success("Prescription image prepared.")
 
     if st.button("Save Patient Info"):
         if not name:
@@ -717,30 +711,30 @@ if tab_selection == "Patient Information":
             }
 
             try:
-                with st.spinner("Saving patient info..."):
-                    new_id = insert_patient_info(
-                        name=name,
-                        age=age,
-                        gender=gender_sel,
-                        contact_number=contact_number,
-                        department=department,
-                        chief_complaint=chief_complaint,
-                        history_presenting_illness=history_presenting_illness,
-                        past_history=past_history,
-                        personal_history=personal_history,
-                        family_history=family_history,
-                        obg_history=obg_history if department == "Gynecology" else "",
-                        lab_report_url=lab_report_url,
-                        medical_imaging_url=medical_imaging_url,
-                        previous_prescription_url=prescription_url
-                    )
-                    st.session_state["patient_data"]["id"] = new_id
-                st.success(f"Patient info saved successfully with ID: {new_id}")
+                new_id = insert_patient_info(
+                    name=name,
+                    age=age,
+                    gender=gender_sel,
+                    contact_number=contact_number,
+                    department=department,
+                    chief_complaint=chief_complaint,
+                    history_presenting_illness=history_presenting_illness,
+                    past_history=past_history,
+                    personal_history=personal_history,
+                    family_history=family_history,
+                    obg_history=obg_history if department == "Gynecology" else "",
+                    lab_report_url=lab_report_url,
+                    medical_imaging_url=medical_imaging_url,
+                    previous_prescription_url=prescription_url
+                )
+                st.session_state["patient_data"]["id"] = new_id
+                st.success(f"Patient info saved successfully (ID: {new_id}).")
             except Exception as e:
                 st.error(f"Failed to save patient info: {e}")
 
-
-# -------------------- 2) DIAGNOSIS, PROGNOSIS & TREATMENT TAB -------------------- #
+# ---------------------------------------
+# 2) DIAGNOSIS, PROGNOSIS & TREATMENT
+# ---------------------------------------
 elif tab_selection == "Diagnosis, Prognosis & Treatment":
     st.header(f"{department} - Diagnosis, Prognosis & Treatment")
 
@@ -866,7 +860,6 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
             final_tests_str = ", ".join(selected_tests)
             final_treatment_str = ", ".join(selected_treats)
 
-            
             # print(final_dx)
             # print(final_tests_str)
             # print(selected_tests)
@@ -878,7 +871,6 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
             st.session_state["final_diagnosis"] = final_dx
             st.session_state["selected_tests"] = selected_tests
             st.session_state["selected_treats"] = selected_treats
-
 
             if st.button("Save Selections"):
                 pid = patient_data.get("id")
@@ -897,303 +889,178 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     except Exception as e:
                         st.error(f"DB update error: {e}")
 
-
-# -------------------- 3) FOLLOW-UP QUESTIONS TAB -------------------- #
-elif tab_selection == "Follow-Up Questions":
-    st.header("Follow-Up Questions")
-
-    def compile_patient_context_for_gpt():
-        """
-        Compile the entire relevant patient record + GPT advice + conversation history
-        into one string for GPT context.
-        """
-        patient_data = st.session_state.get("patient_data", {})
-        advice_text = st.session_state.get("gpt_advice_text", "")
-        case_summary = st.session_state.get("gpt_case_summary", "")
-        conversation_history = st.session_state.get("conversation_history", "")
-
-        if not patient_data:
-            return ""
-
-        context_str = f"""
-        Patient Name: {patient_data.get('name','')}
-        Age: {patient_data.get('age','')}
-        Gender: {patient_data.get('gender','')}
-        Contact Number: {patient_data.get('contact_number','')}
-        Department: {patient_data.get('department','')}
-        Chief Complaint: {patient_data.get('chief_complaint','')}
-        History of Presenting Illness: {patient_data.get('history_presenting_illness','')}
-        Past History: {patient_data.get('past_history','')}
-        Personal History: {patient_data.get('personal_history','')}
-        Family History: {patient_data.get('family_history','')}
-        OBG History: {patient_data.get('obg_history','')}
-
-        Lab Report Text (if any): {patient_data.get('lab_report_text','')}
-
-        ---- GPT Advice So Far ----
-        {advice_text}
-
-        ---- Case Summary (if any) ----
-        {case_summary}
-
-        ---- Conversation So Far ----
-        {conversation_history}
-        """
-
-        return context_str.strip()
-
-    def ask_gpt_followup_question(full_context, question):
-        """
-        Uses GPT-4 for the conversation, referencing entire context.
-        """
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful AI medical assistant. You have access to the patient's entire record, "
-                    "previous GPT advice, and the conversation so far. Provide clinically relevant, concise answers. "
-                    "Use brand names/dosages where appropriate, and do not add disclaimers about specialist follow-ups."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Full Patient Context:\n{full_context}\n\nFollow-Up Question: {question}"
-            }
-        ]
-
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=messages,
-                temperature=0.5,
-                max_tokens=800
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            return f"Error from OpenAI: {str(e)}"
-
-    def generate_question_suggestions(full_context):
-        """
-        Generate a set of 5 new follow-up questions from different angles.
-        """
-        prompt = f"""
-        You are a helpful AI medical assistant. You've seen the entire patient context, including conversation so far.
-
-        Please propose 5 new, non-repetitive, interesting and relevant follow-up questions a doctor might ask, from different angles
-        (e.g., clarifications on symptoms, comorbid conditions, medication side effects, social or lifestyle factors, next steps in testing, etc.).
-        Avoid duplicating previous questions from the conversation.
-
-        Return them either as a numbered list or bullet list.
-
-        FULL CONTEXT:
-        {full_context}
-        """
-
-        messages = [
-            {"role": "system", "content": "You are ChatGPT, a helpful AI medical assistant."},
-            {"role": "user", "content": prompt}
-        ]
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=400
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            return f"Error from OpenAI: {str(e)}"
-
-    # Ensure patient info is saved
-    patient_data = st.session_state.get("patient_data", {})
-    if not patient_data:
-        st.warning("No patient information available. Please fill out 'Patient Information' first.")
-        st.stop()
-
-    st.write("Use this chatbot interface to ask any follow-up questions regarding the patient's history, labs, images, prescriptions, or previous GPT advice.")
-
-    # 1) Generate suggestions
-    if st.button("Generate Suggested Follow-Up Questions"):
-        full_context = compile_patient_context_for_gpt()
-        suggestions_text = generate_question_suggestions(full_context)
-        st.session_state["suggested_questions"] = suggestions_text
-
-    # Show suggestions
-    suggestions = st.session_state.get("suggested_questions", "")
-    if suggestions:
-        st.markdown("### Suggested Follow-Up Questions")
-        st.markdown(suggestions)
-
-    # 2) Let user type a question or pick from suggestions
-    st.write("---")
-    st.subheader("Ask a Follow-Up Question")
-    follow_up_question = st.text_input("Type your question here")
-
-    # Parse suggestions from bullet or numbered lines
-    suggestion_lines = []
-    for line in suggestions.splitlines():
-        line = line.strip()
-        # If line starts with "- " or a digit + punctuation
-        if line.startswith("- ") or re.match(r"^\d+[.)]\s", line):
-            suggestion_lines.append(line)
-
-    selected_suggestion = st.selectbox("...or pick one of the suggestions above", ["(None)"] + suggestion_lines)
-
-    if st.button("Submit Follow-Up"):
-        question_to_ask = follow_up_question.strip()
-        if selected_suggestion != "(None)" and not question_to_ask:
-            # If user didn't type anything, but selected a suggestion
-            question_to_ask = re.sub(r"^(\- |\d+[.)]\s)", "", selected_suggestion).strip()
-
-        if question_to_ask:
-            full_context = compile_patient_context_for_gpt()
-            response_from_gpt = ask_gpt_followup_question(full_context, question_to_ask)
-
-            # 4) Update conversation history
-            current_history = st.session_state.get("conversation_history", "")
-            updated_conversation = (
-                current_history
-                + f"\n\nDoctor's Question: {question_to_ask}\nAI's Answer: {response_from_gpt}"
-            )
-            st.session_state["conversation_history"] = updated_conversation
-
-            # 5) Show GPT’s response
-            st.markdown("### Response")
-            st.write(response_from_gpt)
-
-            # Clear typed question
-            st.session_state["follow_up_question"] = ""
-        else:
-            st.warning("Please type or select a question before clicking 'Submit Follow-Up'.")
-
-
-# -------------------- 4) SEARCH PATIENT RECORDS TAB -------------------- #
+# ---------------------------------------
+# 4) SEARCH PATIENT RECORDS TAB
+# ---------------------------------------
 elif tab_selection == "Search Patient Records":
     st.header("Search Patient Records")
 
-    search_name = st.text_input("Search by Name").strip()
-    search_age = st.number_input("Search by Age", min_value=0, value=0)
-    search_gender = st.selectbox("Search by Gender", ["Select Gender", "Male", "Female", "Other"])
-    search_contact = st.text_input("Search by Contact Number").strip()
+    s_name = st.text_input("Search by Name").strip()
+    s_age = st.number_input("Search by Age", min_value=0, value=0)
+    s_gender = st.selectbox("Search by Gender", ["Select Gender", "Male", "Female", "Other"])
+    s_contact = st.text_input("Search by Contact Number").strip()
 
     if st.button("Search"):
-        records = search_patients(
-            name=search_name,
-            age=search_age if search_age > 0 else None,
-            gender=search_gender if search_gender != "Select Gender" else None,
-            contact=search_contact
+        found_records = search_patients(
+            name=s_name,
+            age=s_age if s_age>0 else None,
+            gender=s_gender if s_gender!="Select Gender" else None,
+            contact=s_contact
         )
-
-        if records:
-            st.success(f"Found {len(records)} record(s)")
-            for record in records:
-                with st.expander(f"Record ID: {record['id']} - {record['patient_name']}"):
-                    # Show main info
-                    st.markdown(f"**Name:** {record['patient_name']}")
-                    st.markdown(f"**Age:** {record['age']}")
-                    st.markdown(f"**Gender:** {record['gender']}")
-                    st.markdown(f"**Contact:** {record['contact_number']}")
-                    st.markdown(f"**Department:** {record['department']}")
-                    st.markdown(f"**Chief Complaint:** {record['chief_complaint']}")
-                    st.markdown(f"**History of Presenting Illness:** {record['history_of_presenting_illness']}")
-                    st.markdown(f"**Past History:** {record['past_history']}")
-                    st.markdown(f"**Personal History:** {record['personal_history']}")
-                    st.markdown(f"**Family History:** {record['family_history']}")
-                    if record.get('obg_history'):
-                        st.markdown(f"**OBG History:** {record['obg_history']}")
-
-                    # Final doc-chosen items
-                    st.markdown("**Final Diagnosis (Doc Selected):**")
-                    final_dx_val = record.get('final_diagnosis', '')
-                    st.write(f"- {final_dx_val}" if final_dx_val else "Not provided")
-
-                    st.markdown("**Final Tests (Doc Selected):**")
-                    final_tests_val = record.get('final_tests', '')
-                    if final_tests_val:
-                        splitted_tests = [x.strip() for x in final_tests_val.split(',') if x.strip()]
-                        for test in splitted_tests:
-                            st.write(f"- {test}")
-                    else:
-                        st.write("Not provided")
-
-                    st.markdown("**Final Treatment Plan (Doc Selected):**")
-                    final_treat_val = record.get('final_treatment_plan', '')
-                    if final_treat_val:
-                        splitted_treats = [x.strip() for x in final_treat_val.split(',') if x.strip()]
-                        for tr in splitted_treats:
-                            st.write(f"- {tr}")
-                    else:
-                        st.write("Not provided")
-
-                    # GPT advice (minus "Case Summary")
-                    st.markdown("**Medical Advice (GPT Output, minus Case Summary):**")
-                    st.markdown(record.get('medical_advice','') or "No GPT advice stored.")
-
-                    # Case Summary
-                    st.markdown("**Case Summary:**")
-                    if record.get('case_summary'):
-                        st.write(record['case_summary'])
-                    else:
-                        st.write("None")
-
-                    st.markdown(f"**Created At:** {record.get('created_at', '')}")
-
-                    # ---------- Lab Report PDF Link / Iframe ----------
-                    lab_url = record.get("lab_report_url")
-                    if lab_url:
-                        st.markdown("**Lab Report (PDF):**")
-                        presigned_pdf_url = generate_presigned_url(lab_url)
-                        if presigned_pdf_url:
-                            st.write(f"[Open PDF]({presigned_pdf_url})")
-                            st.markdown(
-                                f"""
-                                <iframe src="{presigned_pdf_url}" width="700" height="1000">
-                                This browser does not support PDFs. 
-                                <a href="{presigned_pdf_url}">Download PDF</a>
-                                </iframe>
-                                """,
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            st.warning("Could not generate a presigned URL for this PDF.")
-
-                    # ---------- Medical Imaging (PNG/JPG) ----------
-                    med_img_url = record.get("medical_imaging_url")
-                    if med_img_url:
-                        st.markdown("**Medical Imaging Preview (Image)**")
-                        presigned_img_url = generate_presigned_url(med_img_url)
-                        if presigned_img_url:
-                            st.image(presigned_img_url, use_column_width=True)
-                        else:
-                            st.warning("Could not generate a presigned URL for this image.")
-
-                    # ---------- Previous Prescription Link / Iframe ----------
-                    prescription_url = record.get("previous_prescription_url")
-                    if prescription_url:
-                        st.markdown("**Previous Prescription:**")
-                        presigned_prescription_url = generate_presigned_url(prescription_url)
-                        if presigned_prescription_url:
-                            if prescription_url.lower().endswith(".pdf"):
-                                st.write(f"[Open PDF]({presigned_prescription_url})")
-                                st.markdown(
-                                    f"""
-                                    <iframe src="{presigned_prescription_url}" width="700" height="1000">
-                                    This browser does not support PDFs. 
-                                    <a href="{presigned_prescription_url}">Download PDF</a>
-                                    </iframe>
-                                    """,
-                                    unsafe_allow_html=True
-                                )
-                            else:
-                                st.image(presigned_prescription_url, use_column_width=True)
-                        else:
-                            st.warning("Could not generate a presigned URL for this prescription.")
+        if found_records:
+            st.success(f"Found {len(found_records)} record(s).")
+            st.session_state["search_results"] = found_records
+            st.session_state["edit_id"] = None
         else:
-            st.warning("No records found matching the search criteria.")
+            st.warning("No matching records found.")
+            st.session_state["search_results"] = []
+            st.session_state["edit_id"] = None
 
+    if st.session_state["search_results"]:
+        for rec in st.session_state["search_results"]:
+            st.write("---")
+            # Show main info + entire patient history
+            st.write(f"**ID:** {rec['id']} | **Name:** {rec['patient_name']} | **Age:** {rec['age']} | **Gender:** {rec['gender']}")
+            st.write(f"**Contact:** {rec['contact_number']} | **Department:** {rec['department']}")
 
+            # Show all textual histories
+            st.markdown(f"**Chief Complaint:** {rec['chief_complaint']}")
+            st.markdown(f"**History of Presenting Illness:** {rec['history_of_presenting_illness']}")
+            st.markdown(f"**Past History:** {rec['past_history']}")
+            st.markdown(f"**Personal History:** {rec['personal_history']}")
+            st.markdown(f"**Family History:** {rec['family_history']}")
+            if rec.get('obg_history'):
+                st.markdown(f"**OBG History:** {rec['obg_history']}")
 
-# -------------------- 5) PRESCRIPTION WRITING TAB -------------------- #
+            # Doctor-chosen final items
+            dx = rec.get("final_diagnosis", "") or "(No final diagnosis)"
+            tests = rec.get("final_tests","") or "(No tests chosen)"
+            treat = rec.get("final_treatment_plan","") or "(No treatment plan)"
+            st.markdown(f"**Final Diagnosis (Doc Selected):** {dx}")
+            st.markdown(f"**Final Tests (Doc Selected):** {tests}")
+            st.markdown(f"**Final Treatment Plan (Doc Selected):** {treat}")
+
+            med_adv = rec.get("medical_advice","") or "No medical advice stored."
+            st.markdown(f"**Medical Advice:** {med_adv}")
+
+            csum = rec.get("case_summary","") or "(No case summary)"
+            st.markdown(f"**Case Summary:** {csum}")
+
+            # Potential file links
+            if rec.get("lab_report_url"):
+                pdf_link = generate_presigned_url(rec["lab_report_url"])
+                if pdf_link:
+                    st.markdown(f"**Lab Report:** [Open PDF]({pdf_link})")
+
+            if rec.get("medical_imaging_url"):
+                img_link = generate_presigned_url(rec["medical_imaging_url"])
+                if img_link:
+                    # If it's an image
+                    if rec["medical_imaging_url"].lower().endswith((".png",".jpg",".jpeg")):
+                        st.image(img_link, use_column_width=True)
+                    else:
+                        st.write(f"[Imaging File]({img_link})")
+
+            if rec.get("previous_prescription_url"):
+                pres_link = generate_presigned_url(rec["previous_prescription_url"])
+                if pres_link:
+                    if rec["previous_prescription_url"].lower().endswith(".pdf"):
+                        st.markdown(f"**Previous Prescription (PDF):** [Open PDF]({pres_link})")
+                    else:
+                        st.image(pres_link, use_column_width=True)
+
+            # Edit button
+            if st.button(f"Edit Patient #{rec['id']}", key=f"edit_btn_{rec['id']}"):
+                st.session_state["edit_id"] = rec["id"]
+
+        # Inline edit form for whichever record is selected
+        if st.session_state["edit_id"]:
+            st.write("---")
+            st.subheader(f"Editing Patient ID: {st.session_state['edit_id']}")
+
+            edit_record = next((r for r in st.session_state["search_results"]
+                                if r["id"] == st.session_state["edit_id"]), None)
+            if edit_record:
+                new_name = st.text_input("Name", value=edit_record['patient_name'])
+                new_age = st.number_input("Age", min_value=1, max_value=120, value=edit_record['age'])
+                gender_opts = ["Male", "Female", "Other"]
+                try:
+                    gender_idx = gender_opts.index(edit_record['gender'])
+                except:
+                    gender_idx = 0
+                new_gender = st.selectbox("Gender", gender_opts, index=gender_idx)
+                new_contact = st.text_input("Contact Number", value=edit_record['contact_number'])
+
+                dept_list = list(contexts.keys())
+                try:
+                    dept_idx = dept_list.index(edit_record['department'])
+                except:
+                    dept_idx = 0
+                new_dept = st.selectbox("Department", dept_list, index=dept_idx)
+
+                new_chief = st.text_input("Chief Complaint", value=edit_record['chief_complaint'])
+                new_hpi = st.text_area("History of Presenting Illness", value=edit_record['history_of_presenting_illness'])
+                new_past = st.text_area("Past History", value=edit_record['past_history'])
+                new_pers = st.text_area("Personal History", value=edit_record['personal_history'])
+                new_fam = st.text_area("Family History", value=edit_record['family_history'])
+
+                new_obg = ""
+                if new_dept == "Gynecology":
+                    new_obg = st.text_area("OBG History", value=edit_record.get('obg_history',''))
+
+                st.write("Optionally upload new files to replace existing ones:")
+
+                # Lab
+                new_lab_file = st.file_uploader("New Lab Report (PDF)", type=["pdf"], key=f"lab_{edit_record['id']}")
+                updated_lab_url = edit_record.get("lab_report_url", "")
+                if new_lab_file:
+                    pdfb = new_lab_file.read()
+                    updated_lab_url = upload_to_s3(pdfb, new_lab_file.name)
+                    st.info("New lab PDF uploaded.")
+
+                # Imaging
+                new_img_file = st.file_uploader("New Imaging (PNG/JPG)", type=["png","jpg","jpeg"], key=f"img_{edit_record['id']}")
+                updated_img_url = edit_record.get("medical_imaging_url", "")
+                if new_img_file:
+                    rawb = new_img_file.read()
+                    dsb = downsample_image(rawb)
+                    updated_img_url = upload_to_s3(dsb, new_img_file.name)
+                    st.image(dsb, caption="Updated Imaging Preview")
+
+                # Prescription
+                new_pres_file = st.file_uploader("New Prescription (PDF/PNG/JPG)", type=["pdf","png","jpg","jpeg"], key=f"pres_{edit_record['id']}")
+                updated_presc_url = edit_record.get("previous_prescription_url", "")
+                if new_pres_file:
+                    pb = new_pres_file.read()
+                    updated_presc_url = upload_to_s3(pb, new_pres_file.name)
+                    st.info("New prescription uploaded.")
+
+                if st.button(f"Save Changes for ID {edit_record['id']}", key=f"save_{edit_record['id']}"):
+                    try:
+                        update_patient_info(
+                            patient_id=edit_record['id'],
+                            name=new_name,
+                            age=new_age,
+                            gender=new_gender,
+                            contact_number=new_contact,
+                            department=new_dept,
+                            chief_complaint=new_chief,
+                            history_presenting_illness=new_hpi,
+                            past_history=new_past,
+                            personal_history=new_pers,
+                            family_history=new_fam,
+                            obg_history=new_obg,
+                            lab_report_url=updated_lab_url,
+                            medical_imaging_url=updated_img_url,
+                            previous_prescription_url=updated_presc_url
+                        )
+                        st.success("Record updated successfully.")
+                    except Exception as e:
+                        st.error(f"Update failed: {e}")
+
+# ---------------------------------------
+# 4) PRESCRIPTION WRITING TAB
+# ---------------------------------------
 elif tab_selection == "Prescription Writing":
     st.header("Prescription Writing")
 
@@ -1267,18 +1134,6 @@ elif tab_selection == "Prescription Writing":
         key="drugs_input"
     )
 
-    # Convert instruction dictionaries to string format for display
-    # instructions_list = [
-    #     f"{instruction['drug_name']}: {instruction['instruction']}"
-    #     for instruction in prescription.get("instructions", [])
-    # ]
-    # instructions = st.text_area(
-    #     "Instructions for Each Drug (corresponding order)",
-    #     value="\n".join(instructions_list),
-    #     placeholder="E.g., Take with meals; drink plenty of water",
-    #     key="instructions_input"
-    # )
-
     tests_list = [
         f"{test.get('name', 'Unknown Test')} - {test.get('reason', 'No reason provided')}"
         for test in prescription.get("tests", [])
@@ -1297,8 +1152,6 @@ elif tab_selection == "Prescription Writing":
         key="follow_up_input"
     )
 
-
-
     # Save Prescription to Database
     if st.button("Save Prescription"):
         prescription_data = {
@@ -1309,26 +1162,8 @@ elif tab_selection == "Prescription Writing":
             "follow_up": follow_up.strip()
         }
         st.session_state["prescription"] = prescription_data  # Update session state
-        try:
-            if "id" in patient_data:
-                update_query = text("""
-                    UPDATE patient_info
-                    SET prescription = :prescription
-                    WHERE id = :pid
-                """)
-                with engine.begin() as conn:
-                    conn.execute(update_query, {
-                        'prescription': json.dumps(prescription_data),
-                        'pid': patient_data["id"]
-                    })
-                st.success("Prescription saved successfully!")
-            else:
-                st.error("No patient ID found. Please ensure patient info is saved.")
-        except Exception as e:
-            st.error(f"Database error: {e}")
 
-    # Download Prescription as PDF
-    if st.button("Download Prescription as PDF"):
+        # Generate PDF
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
         import io
@@ -1343,22 +1178,46 @@ elif tab_selection == "Prescription Writing":
             pdf.drawString(50, y, f"Diagnosis: {data['diagnosis']}")
             y -= 20
             pdf.drawString(50, y, "Drugs & Dosages:")
-            for drug, instruction in zip(data["drugs"], data.get("instructions", [])):
+            for drug in data['drugs']:
                 y -= 15
-                pdf.drawString(60, y, f"- {drug}: {instruction}")
+                pdf.drawString(60, y, f"- {drug}")
             y -= 20
-            # Safeguard against non-string items in tests
-            pdf.drawString(50, y, f"Recommended Tests: {', '.join(map(str, data['tests']))}")
+            pdf.drawString(50, y, f"Recommended Tests: {', '.join(data['tests'])}")
             y -= 20
             pdf.drawString(50, y, f"Follow-Up Instructions: {data['follow_up']}")
             pdf.save()
             pdf_buffer.seek(0)
-            return pdf_buffer.read()    
+            return pdf_buffer.read()
 
-        pdf_data = create_pdf(st.session_state["prescription"])
-        st.download_button(
-            label="Download PDF",
-            data=pdf_data,
-            file_name=f"Prescription_{patient_data.get('name', 'Unknown')}.pdf",
-            mime="application/pdf"
-        )
+        pdf_data = create_pdf(prescription_data)
+
+        # Upload to S3
+        try:
+            file_name = f"Prescription_{patient_data.get('name', 'Unknown')}_{int(time.time())}.pdf"
+            lab_report_url = upload_to_s3(pdf_data, file_name)
+
+            # Save URL to database
+            if "id" in patient_data:
+                update_query = text("""
+                    UPDATE patient_info
+                    SET previous_prescription_url = :file_url
+                    WHERE id = :pid
+                """)
+                with engine.begin() as conn:
+                    conn.execute(update_query, {
+                        'file_url': lab_report_url,
+                        'pid': patient_data["id"]
+                    })
+
+            # st.success(f"Prescription saved and uploaded successfully! URL: {lab_report_url}")
+
+            # Provide download option for the generated PDF
+            st.download_button(
+                label="Download Prescription PDF",
+                data=pdf_data,
+                file_name=f"Prescription_{patient_data.get('name', 'Unknown')}.pdf",
+                mime="application/pdf"
+            )
+
+        except Exception as e:
+            st.error(f"Error saving prescription: {e}")
