@@ -7,6 +7,7 @@ import uuid
 import base64
 import logging
 import tempfile
+from datetime import datetime
 
 import pdfplumber
 import requests
@@ -16,7 +17,6 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import boto3
 from openai import OpenAI
-
 import json
 from sqlalchemy import text
 
@@ -54,6 +54,12 @@ s3_client = boto3.client(
     aws_secret_access_key=aws_secret_access_key
 )
 
+FIXED_PROMPT_IMAGE = (
+    "You are a helpful medical AI. Examine the following medical image. "
+    "Describe any possible findings, anomalies, or relevant clinical interpretations. "
+    "Avoid disclaimers about 'consult a specialist'."
+)
+
 # ---------------------------------------
 #        DEPARTMENT CONTEXTS
 # ---------------------------------------
@@ -78,6 +84,7 @@ contexts = {
     "General Medicine": "Common conditions in general medicine include fever, unexplained pain, fatigue, weight changes, cough.",
     "Endocrinology": "Common conditions in endocrinology include diabetes, thyroid disorders, adrenal disorders, osteoporosis, hormone imbalances."
 }
+
 # ---------------------------------------
 #        HELPER / UTILITY FUNCTIONS
 # ---------------------------------------
@@ -142,6 +149,106 @@ def extract_text_from_pdf(pdf_file):
 # ---------------------------------------
 #        DATABASE FUNCTIONS
 # ---------------------------------------
+
+def insert_patient_version(
+    patient_id,
+    name,
+    age,
+    gender,
+    contact_number,
+    department,
+    chief_complaint,
+    history_presenting_illness,
+    past_history,
+    personal_history,
+    family_history,
+    obg_history=None,
+    lab_report_url=None,
+    medical_imaging_url=None,
+    previous_prescription_url=None,
+    medical_advice=None,
+    case_summary=None,
+    final_diagnosis=None,
+    final_tests=None,
+    final_treatment_plan=None
+):
+    """
+    Inserts a new row into patient_info_versions with local Python timestamp.
+    """
+    logger.info(f"Inserting new version row for patient {patient_id}.")
+    version_query = text("""
+        INSERT INTO patient_info_versions (
+            patient_id,
+            version_timestamp,
+            patient_name,
+            age,
+            gender,
+            contact_number,
+            department,
+            chief_complaint,
+            history_of_presenting_illness,
+            past_history,
+            personal_history,
+            family_history,
+            obg_history,
+            lab_report_url,
+            medical_imaging_url,
+            previous_prescription_url,
+            medical_advice,
+            case_summary,
+            final_diagnosis,
+            final_tests,
+            final_treatment_plan
+        ) VALUES (
+            :pid,
+            :ts,
+            :pname,
+            :page,
+            :pgender,
+            :pcontact,
+            :pdept,
+            :pchief,
+            :phpi,
+            :ppast,
+            :ppers,
+            :pfam,
+            :pobg,
+            :plab,
+            :pimg,
+            :ppres,
+            :padvice,
+            :pcase,
+            :fdx,
+            :ftests,
+            :ftreat
+        )
+    """)
+    with engine.begin() as conn:
+        conn.execute(version_query, {
+            'pid': patient_id,
+            'ts': datetime.now(),
+            'pname': name,
+            'page': age,
+            'pgender': gender,
+            'pcontact': contact_number,
+            'pdept': department,
+            'pchief': chief_complaint,
+            'phpi': history_presenting_illness,
+            'ppast': past_history,
+            'ppers': personal_history,
+            'pfam': family_history,
+            'pobg': obg_history,
+            'plab': lab_report_url,
+            'pimg': medical_imaging_url,
+            'ppres': previous_prescription_url,
+            'padvice': medical_advice,
+            'pcase': case_summary,
+            'fdx': final_diagnosis,
+            'ftests': final_tests,
+            'ftreat': final_treatment_plan
+        })
+    logger.info(f"Version row added for patient {patient_id}.")
+
 def insert_patient_info(
     name,
     age,
@@ -160,7 +267,11 @@ def insert_patient_info(
     medical_advice=None,
     case_summary=None
 ):
-    logger.info(f"Inserting new patient record into DB for: {name}, age: {age}")
+    """
+    1) Create a new 'latest' record in patient_info
+    2) Also insert the same data as the initial row in patient_info_versions
+    """
+    logger.info(f"Inserting new patient record for: {name}, age: {age}")
     insert_query = text("""
         INSERT INTO patient_info (
             patient_name,
@@ -219,16 +330,53 @@ def insert_patient_info(
             'case_summary': case_summary
         })
         new_id = result.fetchone()[0]
-    logger.info(f"Patient record inserted successfully with ID: {new_id}")
+
+    # Also insert into versions table
+    insert_patient_version(
+        patient_id=new_id,
+        name=name,
+        age=age,
+        gender=gender,
+        contact_number=contact_number,
+        department=department,
+        chief_complaint=chief_complaint,
+        history_presenting_illness=history_presenting_illness,
+        past_history=past_history,
+        personal_history=personal_history,
+        family_history=family_history,
+        obg_history=obg_history,
+        lab_report_url=lab_report_url,
+        medical_imaging_url=medical_imaging_url,
+        previous_prescription_url=previous_prescription_url,
+        medical_advice=medical_advice,
+        case_summary=case_summary
+    )
+    logger.info(f"Patient record inserted with ID: {new_id}")
     return new_id
 
 def update_patient_info(
-    patient_id, name, age, gender, contact_number, department,
-    chief_complaint, history_presenting_illness, past_history,
-    personal_history, family_history, obg_history=None,
-    lab_report_url=None, medical_imaging_url=None, previous_prescription_url=None
+    patient_id,
+    name,
+    age,
+    gender,
+    contact_number,
+    department,
+    chief_complaint,
+    history_presenting_illness,
+    past_history,
+    personal_history,
+    family_history,
+    obg_history=None,
+    lab_report_url=None,
+    medical_imaging_url=None,
+    previous_prescription_url=None
 ):
-    query = text("""
+    """
+    1) Update 'latest' in patient_info
+    2) Insert a new version row (with local timestamp).
+    """
+    logger.info(f"Updating patient_info ID: {patient_id}")
+    update_query = text("""
         UPDATE patient_info
         SET
             patient_name = :name,
@@ -248,7 +396,7 @@ def update_patient_info(
         WHERE id = :pid
     """)
     with engine.begin() as conn:
-        conn.execute(query, {
+        conn.execute(update_query, {
             'name': name,
             'age': age,
             'gender': gender,
@@ -266,13 +414,54 @@ def update_patient_info(
             'pid': patient_id
         })
 
+    # Also insert new version
+    insert_patient_version(
+        patient_id=patient_id,
+        name=name,
+        age=age,
+        gender=gender,
+        contact_number=contact_number,
+        department=department,
+        chief_complaint=chief_complaint,
+        history_presenting_illness=history_presenting_illness,
+        past_history=past_history,
+        personal_history=personal_history,
+        family_history=family_history,
+        obg_history=obg_history,
+        lab_report_url=lab_report_url,
+        medical_imaging_url=medical_imaging_url,
+        previous_prescription_url=previous_prescription_url
+    )
+
+def update_patient_medical_advice(version_id, advice_text, case_summary):
+    """
+    Update the existing version row with newly generated GPT advice.
+    """
+    logger.info(f"Updating medical advice in version ID: {version_id}")
+    query = text("""
+        UPDATE patient_info_versions
+        SET medical_advice = :madv,
+            case_summary = :csum
+        WHERE id = :vid
+    """)
+    with engine.begin() as conn:
+        conn.execute(query, {
+            'madv': advice_text,
+            'csum': case_summary,
+            'vid': version_id
+        })
+
 def update_patient_final_choices(
-    patient_id, 
-    final_diagnosis, 
-    final_tests, 
+    patient_id,
+    final_diagnosis,
+    final_tests,
     final_treatment_plan,
     case_summary=None
 ):
+    """
+    1) Update final dx/tests/treatment in 'latest' patient_info
+    2) Insert new version row capturing these fields
+    """
     logger.info(f"Updating final choices for patient ID: {patient_id}")
     update_query = text("""
         UPDATE patient_info
@@ -290,10 +479,37 @@ def update_patient_final_choices(
             'case_summary': case_summary,
             'id': patient_id
         })
-    logger.info(f"Final diagnosis/tests/treatment updated for patient ID: {patient_id}")
+
+    # Pull the new "latest" row so we can version it
+    sel_query = text("SELECT * FROM patient_info WHERE id = :pid")
+    with engine.begin() as conn:
+        row = conn.execute(sel_query, {'pid': patient_id}).mappings().first()
+
+    insert_patient_version(
+        patient_id=patient_id,
+        name=row['patient_name'],
+        age=row['age'],
+        gender=row['gender'],
+        contact_number=row['contact_number'],
+        department=row['department'],
+        chief_complaint=row['chief_complaint'],
+        history_presenting_illness=row['history_of_presenting_illness'],
+        past_history=row['past_history'],
+        personal_history=row['personal_history'],
+        family_history=row['family_history'],
+        obg_history=row['obg_history'],
+        lab_report_url=row['lab_report_url'],
+        medical_imaging_url=row['medical_imaging_url'],
+        previous_prescription_url=row['previous_prescription_url'],
+        medical_advice=row['medical_advice'],
+        case_summary=row['case_summary'],
+        final_diagnosis=final_diagnosis,
+        final_tests=final_tests,
+        final_treatment_plan=final_treatment_plan
+    )
 
 def search_patients(name=None, age=None, gender=None, contact=None):
-    logger.debug("Searching patient records...")
+    logger.debug("Searching patient_info for main records...")
     query = "SELECT * FROM patient_info WHERE 1=1"
     params = {}
 
@@ -313,19 +529,35 @@ def search_patients(name=None, age=None, gender=None, contact=None):
     with engine.connect() as conn:
         result = conn.execute(text(query), params)
         records = result.mappings().all()
-    logger.debug(f"Search query returned {len(records)} record(s).")
+    logger.debug(f"Search query returned {len(records)} records.")
     return records
 
-# ---------------------------------------
-#  GPT-LIKE FUNCTIONS (STUB EXAMPLES)
-# ---------------------------------------
+def get_patient_versions(patient_id):
+    """
+    Return all versions from patient_info_versions for this patient, DESC order.
+    """
+    logger.debug(f"Fetching versions for patient {patient_id}...")
+    sel_query = text("""
+        SELECT * FROM patient_info_versions
+        WHERE patient_id = :pid
+        ORDER BY version_timestamp DESC
+    """)
+    with engine.connect() as conn:
+        result = conn.execute(sel_query, {'pid': patient_id}).mappings().all()
+    return result
 
-FIXED_PROMPT_IMAGE = (
-    "You are a helpful medical AI. Examine the following medical image. "
-    "Describe any possible findings, anomalies, or relevant clinical interpretations. "
-    "Avoid disclaimers about 'consult a specialist'."
-)
+def get_version_by_id(version_id):
+    """
+    Get a specific version row by its ID.
+    """
+    sel_query = text("SELECT * FROM patient_info_versions WHERE id = :vid")
+    with engine.connect() as conn:
+        row = conn.execute(sel_query, {'vid': version_id}).mappings().first()
+    return row
 
+# ---------------------------------------
+#  GPT-LIKE FUNCTIONS (stubs)
+# ---------------------------------------
 def analyze_medical_image(image_data_b64):
     """
     Analyze a base64-encoded image using GPT-4-turbo.
@@ -435,8 +667,7 @@ def get_medical_advice(
     prescription_analysis_text=""
 ):
     """
-    Combine all analyses + patient's textual histories into one final GPT call.
-    Now updated to include drug dosages and contra-indicative drug warnings.
+    Combine textual fields + analyses to produce final advice.
     """
     context = contexts.get(department, "")
 
@@ -469,20 +700,18 @@ Return your response in bullet-point style with these headings:
 **Prognosis**
 - ...
 **Suggested Treatment Plan**
-- Include recommended drug dosages and provide warnings about any potential contra-indicative drugs.
+- Provide recommended drug dosages, mention any contra-indications
 
 **Case Summary**
 (Short concluding summary)
-
-Keep the tone clinically relevant. Avoid disclaimers about needing further specialist follow-ups.
 """
 
     messages = [
         {
             "role": "system",
             "content": (
-                "You are a helpful assistant specialized in medical diagnosis, prognosis, and treatment planning. "
-                "No disclaimers, please."
+                "You are a helpful assistant specialized in medical diagnosis and treatment. "
+                "No disclaimers, just your best medical reasoning."
             )
         },
         {"role": "user", "content": prompt_text}
@@ -546,6 +775,7 @@ def generate_prescription(diagnosis, tests, treatments, patient_info=None):
             "follow_up": "Follow up with your doctor."
         }
 
+# Parsing helper
 def parse_section(full_text, section_name):
     pattern = rf"\*\*{section_name}\*\*\s*\n?(.*?)(?=\n\*\*|$)"
     match = re.search(pattern, full_text, flags=re.IGNORECASE|re.DOTALL)
@@ -575,7 +805,6 @@ tab_selection = st.sidebar.radio(
     [
         "Patient Information",
         "Diagnosis, Prognosis & Treatment",
-        # Removed "Follow-Up Questions" for brevity
         "Search Patient Records",
         "Prescription Writing"
     ]
@@ -583,21 +812,21 @@ tab_selection = st.sidebar.radio(
 
 department = st.sidebar.selectbox("Select Department", list(contexts.keys()))
 
-# Session placeholders for ephemeral data
+# Session placeholders
 if "patient_data" not in st.session_state:
     st.session_state["patient_data"] = {}
 if "gpt_advice_text" not in st.session_state:
     st.session_state["gpt_advice_text"] = ""
 if "gpt_case_summary" not in st.session_state:
     st.session_state["gpt_case_summary"] = ""
-if "conversation_history" not in st.session_state:
-    st.session_state["conversation_history"] = ""
-if "suggested_questions" not in st.session_state:
-    st.session_state["suggested_questions"] = ""
 if "search_results" not in st.session_state:
     st.session_state["search_results"] = []
+if "view_id" not in st.session_state:
+    st.session_state["view_id"] = None
 if "edit_id" not in st.session_state:
     st.session_state["edit_id"] = None
+if "version_id" not in st.session_state:
+    st.session_state["version_id"] = None
 
 # ---------------------------------------
 # 1) PATIENT INFORMATION TAB
@@ -625,7 +854,7 @@ if tab_selection == "Patient Information":
 
     st.write("Optional: Upload Lab Report (PDF), Medical Imaging (PNG/JPG), or Prescription (PDF/PNG/JPG).")
 
-    # Lab Report
+    # Lab
     lab_report_file = st.file_uploader("Lab Report (PDF)", type=["pdf"])
     lab_report_text = ""
     lab_report_url = None
@@ -638,7 +867,7 @@ if tab_selection == "Patient Information":
             st.text_area("Extracted Lab Text", extracted_text, height=200)
             lab_report_text = extracted_text
 
-    # Medical Imaging
+    # Imaging
     image_data_b64 = ""
     medical_imaging_url = None
     image_file = st.file_uploader("Medical Imaging (PNG/JPG)", type=["png","jpg","jpeg"])
@@ -652,7 +881,7 @@ if tab_selection == "Patient Information":
         b64file = io.BytesIO(downsized)
         image_data_b64 = base64.b64encode(b64file.read()).decode("utf-8")
 
-    # Previous Prescription
+    # Prescription
     prescription_url = None
     prescription_text_or_b64 = ""
     prescription_is_pdf = False
@@ -675,6 +904,7 @@ if tab_selection == "Patient Information":
             prescription_text_or_b64 = b64img
             st.success("Prescription image prepared.")
 
+    # Save
     if st.button("Save Patient Info"):
         if not name:
             st.error("Patient Name is required")
@@ -687,7 +917,7 @@ if tab_selection == "Patient Information":
         elif not chief_complaint:
             st.error("Chief Complaint is required")
         elif not all([history_presenting_illness, past_history, personal_history, family_history]):
-            st.error("Please fill in all the required fields.")
+            st.error("Please fill in all required fields.")
         else:
             st.session_state["patient_data"] = {
                 "name": name,
@@ -732,6 +962,7 @@ if tab_selection == "Patient Information":
             except Exception as e:
                 st.error(f"Failed to save patient info: {e}")
 
+
 # ---------------------------------------
 # 2) DIAGNOSIS, PROGNOSIS & TREATMENT
 # ---------------------------------------
@@ -744,17 +975,17 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
     else:
         if st.button("Get Medical Advice"):
             with st.spinner("Analyzing labs, images, prescriptions, then generating advice..."):
-                # 1) Image analysis
+                # 1) image analysis
                 image_analysis_text = ""
                 if patient_data.get("image_data_b64"):
                     image_analysis_text = analyze_medical_image(patient_data["image_data_b64"])
 
-                # 2) Lab report analysis
+                # 2) lab analysis
                 lab_analysis_text = ""
                 if patient_data.get("lab_report_text"):
                     lab_analysis_text = analyze_lab_report_text(patient_data["lab_report_text"])
 
-                # 3) Prescription analysis
+                # 3) prescription analysis
                 prescription_analysis_text = ""
                 if patient_data.get("prescription_data"):
                     is_pdf = patient_data["prescription_is_pdf"]
@@ -763,7 +994,7 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                         is_pdf=is_pdf
                     )
 
-                # 4) Final advice combining everything
+                # 4) final advice
                 advice_text = get_medical_advice(
                     age=patient_data["age"],
                     gender=patient_data["gender"],
@@ -773,13 +1004,13 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     past_history=patient_data["past_history"],
                     personal_history=patient_data["personal_history"],
                     family_history=patient_data["family_history"],
-                    obg_history=patient_data.get("obg_history", ""),
+                    obg_history=patient_data.get("obg_history",""),
                     image_analysis_text=image_analysis_text,
                     lab_analysis_text=lab_analysis_text,
                     prescription_analysis_text=prescription_analysis_text
                 )
 
-            # Parse out "Case Summary" if needed
+            # parse out case summary
             case_summary_section = parse_section(advice_text, "Case Summary")
             advice_text_no_cs = remove_section(advice_text, "Case Summary")
 
@@ -788,8 +1019,9 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
 
             st.markdown(advice_text_no_cs)
 
-            # Save to DB
+            # Also store in DB (new version)
             if "id" in patient_data:
+                pid = patient_data["id"]
                 try:
                     update_query = text("""
                         UPDATE patient_info
@@ -801,9 +1033,31 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                         conn.execute(update_query, {
                             'advice': advice_text_no_cs,
                             'case_summary': case_summary_section,
-                            'pid': patient_data["id"]
+                            'pid': pid
                         })
-                    st.success("Advice & Case Summary saved in DB!")
+
+                    # Insert a new version capturing the new advice
+                    insert_patient_version(
+                        patient_id=pid,
+                        name=patient_data["name"],
+                        age=patient_data["age"],
+                        gender=patient_data["gender"],
+                        contact_number=patient_data["contact_number"],
+                        department=patient_data["department"],
+                        chief_complaint=patient_data["chief_complaint"],
+                        history_presenting_illness=patient_data["history_presenting_illness"],
+                        past_history=patient_data["past_history"],
+                        personal_history=patient_data["personal_history"],
+                        family_history=patient_data["family_history"],
+                        obg_history=patient_data.get("obg_history",""),
+                        lab_report_url=patient_data.get("lab_report_url"),
+                        medical_imaging_url=patient_data.get("medical_imaging_url"),
+                        previous_prescription_url=patient_data.get("previous_prescription_url"),
+                        medical_advice=advice_text_no_cs,
+                        case_summary=case_summary_section
+                    )
+
+                    st.success("Advice & Case Summary saved in DB (new version created)!")
                 except Exception as e:
                     st.error(f"DB update error: {e}")
 
@@ -818,7 +1072,6 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
             tests_section = parse_section(gpt_text, "Suggested Tests")
             treat_section = parse_section(gpt_text, "Suggested Treatment Plan")
 
-            # Extract bullet items
             most_likely_items = extract_bullet_items(diag_section)
             other_diag_list = extract_bullet_items(other_diag_section)
             tests_list = extract_bullet_items(tests_section)
@@ -831,41 +1084,29 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
 
             selected_other_diag = None
             if other_diag_list:
-                st.markdown("**Other Possible Diagnoses (pick one if desired)**")
+                st.markdown("**Other Possible Diagnoses**")
                 selected_other_diag = st.radio("", options=["(None)"] + other_diag_list)
 
             selected_tests = []
             if tests_list:
                 st.markdown("**Suggested Tests (check all that apply)**")
                 for test in tests_list:
-                    checked = st.checkbox(test, value=False)
-                    if checked:
+                    if st.checkbox(test, value=False):
                         selected_tests.append(test)
 
             selected_treats = []
             if treat_list:
                 st.markdown("**Suggested Treatment Plan (check all that apply)**")
                 for treat_item in treat_list:
-                    checked = st.checkbox(treat_item, value=False)
-                    if checked:
+                    if st.checkbox(treat_item, value=False):
                         selected_treats.append(treat_item)
 
-            # Combine final diagnosis
-            final_dx = ""
-            if final_diagnosis_radio:
-                final_dx = final_diagnosis_radio
+            final_dx = final_diagnosis_radio if final_diagnosis_radio else ""
             if selected_other_diag and selected_other_diag != "(None)":
                 final_dx = selected_other_diag
 
             final_tests_str = ", ".join(selected_tests)
             final_treatment_str = ", ".join(selected_treats)
-
-            # print(final_dx)
-            # print(final_tests_str)
-            # print(selected_tests)
-            # print(selected_treats)
-            # print(final_treatment_str)     # feels like an error here tests and diagnosis not coming in this
-
 
             # Store the selections in session state
             st.session_state["final_diagnosis"] = final_dx
@@ -889,8 +1130,9 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                     except Exception as e:
                         st.error(f"DB update error: {e}")
 
+
 # ---------------------------------------
-# 4) SEARCH PATIENT RECORDS TAB
+# 3) SEARCH PATIENT RECORDS TAB
 # ---------------------------------------
 elif tab_selection == "Search Patient Records":
     st.header("Search Patient Records")
@@ -910,117 +1152,270 @@ elif tab_selection == "Search Patient Records":
         if found_records:
             st.success(f"Found {len(found_records)} record(s).")
             st.session_state["search_results"] = found_records
+            st.session_state["view_id"] = None
             st.session_state["edit_id"] = None
+            st.session_state["version_id"] = None
         else:
             st.warning("No matching records found.")
             st.session_state["search_results"] = []
+            st.session_state["view_id"] = None
             st.session_state["edit_id"] = None
+            st.session_state["version_id"] = None
 
+    # Show basic info for each found record, with a button to view versions or edit
     if st.session_state["search_results"]:
         for rec in st.session_state["search_results"]:
             st.write("---")
-            # Show main info + entire patient history
             st.write(f"**ID:** {rec['id']} | **Name:** {rec['patient_name']} | **Age:** {rec['age']} | **Gender:** {rec['gender']}")
             st.write(f"**Contact:** {rec['contact_number']} | **Department:** {rec['department']}")
 
-            # Show all textual histories
-            st.markdown(f"**Chief Complaint:** {rec['chief_complaint']}")
-            st.markdown(f"**History of Presenting Illness:** {rec['history_of_presenting_illness']}")
-            st.markdown(f"**Past History:** {rec['past_history']}")
-            st.markdown(f"**Personal History:** {rec['personal_history']}")
-            st.markdown(f"**Family History:** {rec['family_history']}")
-            if rec.get('obg_history'):
-                st.markdown(f"**OBG History:** {rec['obg_history']}")
+            # Buttons
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button(f"View Versions for #{rec['id']}", key=f"view_btn_{rec['id']}"):
+                    st.session_state["view_id"] = rec["id"]
+                    st.session_state["edit_id"] = None
+                    st.session_state["version_id"] = None
 
-            # Doctor-chosen final items
-            dx = rec.get("final_diagnosis", "") or "(No final diagnosis)"
-            tests = rec.get("final_tests","") or "(No tests chosen)"
-            treat = rec.get("final_treatment_plan","") or "(No treatment plan)"
-            st.markdown(f"**Final Diagnosis (Doc Selected):** {dx}")
-            st.markdown(f"**Final Tests (Doc Selected):** {tests}")
-            st.markdown(f"**Final Treatment Plan (Doc Selected):** {treat}")
+            with c2:
+                if st.button(f"Edit Patient #{rec['id']}", key=f"edit_btn_{rec['id']}"):
+                    st.session_state["edit_id"] = rec["id"]
+                    st.session_state["view_id"] = None
+                    st.session_state["version_id"] = None
 
-            med_adv = rec.get("medical_advice","") or "No medical advice stored."
-            st.markdown(f"**Medical Advice:** {med_adv}")
-
-            csum = rec.get("case_summary","") or "(No case summary)"
-            st.markdown(f"**Case Summary:** {csum}")
-
-            # Potential file links
-            if rec.get("lab_report_url"):
-                pdf_link = generate_presigned_url(rec["lab_report_url"])
-                if pdf_link:
-                    st.markdown(f"**Lab Report:** [Open PDF]({pdf_link})")
-
-            if rec.get("medical_imaging_url"):
-                img_link = generate_presigned_url(rec["medical_imaging_url"])
-                if img_link:
-                    # If it's an image
-                    if rec["medical_imaging_url"].lower().endswith((".png",".jpg",".jpeg")):
-                        st.image(img_link, use_column_width=True)
-                    else:
-                        st.write(f"[Imaging File]({img_link})")
-
-            if rec.get("previous_prescription_url"):
-                pres_link = generate_presigned_url(rec["previous_prescription_url"])
-                if pres_link:
-                    if rec["previous_prescription_url"].lower().endswith(".pdf"):
-                        st.markdown(f"**Previous Prescription (PDF):** [Open PDF]({pres_link})")
-                    else:
-                        st.image(pres_link, use_column_width=True)
-
-            # Edit button
-            if st.button(f"Edit Patient #{rec['id']}", key=f"edit_btn_{rec['id']}"):
-                st.session_state["edit_id"] = rec["id"]
-
-        # Inline edit form for whichever record is selected
-        if st.session_state["edit_id"]:
+        # Viewing versions
+        if st.session_state["view_id"]:
+            pat_id = st.session_state["view_id"]
             st.write("---")
-            st.subheader(f"Editing Patient ID: {st.session_state['edit_id']}")
+            st.subheader(f"Viewing Versions for Patient ID: {pat_id}")
 
-            edit_record = next((r for r in st.session_state["search_results"]
-                                if r["id"] == st.session_state["edit_id"]), None)
-            if edit_record:
-                new_name = st.text_input("Name", value=edit_record['patient_name'])
-                new_age = st.number_input("Age", min_value=1, max_value=120, value=edit_record['age'])
+            all_versions = get_patient_versions(pat_id)
+            if not all_versions:
+                st.warning("No version history for this patient.")
+            else:
+                # Let user pick which version to display
+                version_labels = []
+                for v in all_versions:
+                    ts_str = v['version_timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                    version_labels.append(f"{ts_str} (vID: {v['id']})")
+
+                chosen_label = st.selectbox("Select a version timestamp", version_labels)
+                # Find the chosen version object
+                idx = version_labels.index(chosen_label)
+                chosen_version = all_versions[idx]
+                st.session_state["version_id"] = chosen_version["id"]
+
+                # Show the version data
+                st.markdown(f"**Version Timestamp:** {chosen_version['version_timestamp']}")
+                st.markdown(f"**Name:** {chosen_version['patient_name']} | **Age:** {chosen_version['age']} | **Gender:** {chosen_version['gender']} | **Contact:** {chosen_version['contact_number']}")
+                st.markdown(f"**Chief Complaint:** {chosen_version['chief_complaint']}")
+                st.markdown(f"**HPI:** {chosen_version['history_of_presenting_illness']}")
+                st.markdown(f"**Past History:** {chosen_version['past_history']}")
+                st.markdown(f"**Personal History:** {chosen_version['personal_history']}")
+                st.markdown(f"**Family History:** {chosen_version['family_history']}")
+                if chosen_version.get('obg_history'):
+                    st.markdown(f"**OBG History:** {chosen_version['obg_history']}")
+                st.markdown(f"**Medical Advice:** {chosen_version.get('medical_advice','None')}")
+                st.markdown(f"**Case Summary:** {chosen_version.get('case_summary','None')}")
+                st.markdown(f"**Final Diagnosis:** {chosen_version.get('final_diagnosis','') or '(None)'}")
+                st.markdown(f"**Final Tests:** {chosen_version.get('final_tests','') or '(None)'}")
+                st.markdown(f"**Final Treatment Plan:** {chosen_version.get('final_treatment_plan','') or '(None)'}")
+
+                # Potential file links
+                if chosen_version.get("lab_report_url"):
+                    pdfv = generate_presigned_url(chosen_version["lab_report_url"])
+                    if pdfv:
+                        st.markdown(f"**Lab Report (Version):** [Open PDF]({pdfv})")
+
+                if chosen_version.get("medical_imaging_url"):
+                    imgv = generate_presigned_url(chosen_version["medical_imaging_url"])
+                    if imgv:
+                        if chosen_version["medical_imaging_url"].lower().endswith((".png",".jpg",".jpeg")):
+                            st.image(imgv, use_column_width=True)
+                        else:
+                            st.write(f"[Imaging File (Version)]({imgv})")
+
+                if chosen_version.get("previous_prescription_url"):
+                    presv = generate_presigned_url(chosen_version["previous_prescription_url"])
+                    if presv:
+                        if chosen_version["previous_prescription_url"].lower().endswith(".pdf"):
+                            st.markdown(f"**Prescription (PDF) [Version]:** [Open PDF]({presv})")
+                        else:
+                            st.image(presv, use_column_width=True)
+
+                # ---------------------- FIX #1: Hide the "Get Advice" button if we already have advice --------------------
+                existing_advice = chosen_version.get("medical_advice", "")
+                if existing_advice and existing_advice.strip():
+                    st.info("Medical advice already exists for this version.")
+                else:
+                    if st.button("Get Medical Advice for This Version", key=f"gpt_version_{chosen_version['id']}"):
+                        with st.spinner("Generating advice for this version..."):
+                            # We'll only reanalyze textual fields from the version here (no files).
+                            advice_text = get_medical_advice(
+                                department=chosen_version["department"],
+                                chief_complaint=chosen_version["chief_complaint"],
+                                history_presenting_illness=chosen_version["history_of_presenting_illness"],
+                                past_history=chosen_version["past_history"],
+                                personal_history=chosen_version["personal_history"],
+                                family_history=chosen_version["family_history"],
+                                obg_history=chosen_version.get("obg_history","")
+                            )
+
+                        # Parse out the case summary
+                        cs_section = parse_section(advice_text, "Case Summary")
+                        advice_no_cs = remove_section(advice_text, "Case Summary")
+
+                        # Update DB so the version's "medical_advice" is displayed
+                        update_patient_medical_advice(
+                            version_id=chosen_version["id"],
+                            advice_text=advice_no_cs,
+                            case_summary=cs_section
+                        )
+
+                        st.success("Medical advice updated in this version’s record!")
+                        # Refresh the chosen_version from DB
+                        refreshed = get_version_by_id(chosen_version["id"])
+                        if refreshed:
+                            chosen_version = refreshed
+
+                        st.write("---")
+                        st.markdown(f"**Updated Medical Advice:** {chosen_version.get('medical_advice','None')}")
+                        st.markdown(f"**Case Summary:** {chosen_version.get('case_summary','None')}")
+
+                # --------------- FIX #2: Use a st.form for Final Choices so UI doesn't vanish on each selection ---------------
+                # We'll only show this section if there's some newly updated advice or existing advice to parse.
+                current_advice = chosen_version.get("medical_advice", "")
+                if current_advice and current_advice.strip():
+
+                    st.write("---")
+                    st.subheader("Select Your Final Choices Based on the Advice")
+
+                    diag_section = parse_section(current_advice, "Most Likely Diagnosis")
+                    other_diag_section = parse_section(current_advice, "Other Possible Diagnoses")
+                    tests_section = parse_section(current_advice, "Suggested Tests")
+                    treat_section = parse_section(current_advice, "Suggested Treatment Plan")
+
+                    most_likely_items = extract_bullet_items(diag_section)
+                    other_diag_list = extract_bullet_items(other_diag_section)
+                    tests_list = extract_bullet_items(tests_section)
+                    treat_list = extract_bullet_items(treat_section)
+
+                    # We create a form so user selections persist until form submission
+                    with st.form(f"final_choices_form_{chosen_version['id']}"):
+                        final_diagnosis_radio = None
+                        if most_likely_items:
+                            st.markdown("**Most Likely Diagnosis (choose one)**")
+                            final_diagnosis_radio = st.radio(
+                                "Likely Diagnosis",
+                                options=most_likely_items,
+                                key=f"rad_{chosen_version['id']}"
+                            )
+
+                        selected_other_diag = None
+                        if other_diag_list:
+                            st.markdown("**Other Possible Diagnoses**")
+                            selected_other_diag = st.radio(
+                                "Other Diagnoses",
+                                options=["(None)"] + other_diag_list,
+                                key=f"othdiag_{chosen_version['id']}"
+                            )
+
+                        # Checkboxes for tests
+                        selected_tests = []
+                        if tests_list:
+                            st.markdown("**Suggested Tests (check all that apply)**")
+                            for idx, test in enumerate(tests_list):
+                                cb_key = f"chk_test_{chosen_version['id']}_{idx}"
+                                # st.checkbox can keep state in the form with unique keys
+                                if st.checkbox(test, key=cb_key):
+                                    selected_tests.append(test)
+
+                        # Checkboxes for treatment
+                        selected_treats = []
+                        if treat_list:
+                            st.markdown("**Suggested Treatment Plan (check all that apply)**")
+                            for idx, treat_item in enumerate(treat_list):
+                                cb_key = f"chk_treat_{chosen_version['id']}_{idx}"
+                                if st.checkbox(treat_item, key=cb_key):
+                                    selected_treats.append(treat_item)
+
+                        final_dx = final_diagnosis_radio if final_diagnosis_radio else ""
+                        if selected_other_diag and selected_other_diag != "(None)":
+                            final_dx = selected_other_diag
+
+                        final_tests_str = ", ".join(selected_tests)
+                        final_treatment_str = ", ".join(selected_treats)
+
+                        submit_btn = st.form_submit_button("Save Selections for This Version")
+                        if submit_btn:
+                            # We'll store these final choices in the "latest" patient record
+                            # then create a new version row capturing them
+                            pid = chosen_version["patient_id"]
+                            try:
+                                update_patient_final_choices(
+                                    patient_id=pid,
+                                    final_diagnosis=final_dx,
+                                    final_tests=final_tests_str,
+                                    final_treatment_plan=final_treatment_str,
+                                    case_summary=chosen_version.get('case_summary','')
+                                )
+                                st.success("Doctor's Final Choices & Case Summary Saved Successfully!")
+                            except Exception as e:
+                                st.error(f"DB update error: {e}")
+
+        # Editing flow
+        if st.session_state["edit_id"]:
+            pat_id_edt = st.session_state["edit_id"]
+            st.write("---")
+            st.subheader(f"Editing Patient ID: {pat_id_edt}")
+
+            query_latest = text("SELECT * FROM patient_info WHERE id=:pid")
+            with engine.connect() as conn:
+                latest_info = conn.execute(query_latest, {'pid': pat_id_edt}).mappings().first()
+
+            if not latest_info:
+                st.warning("No record found in patient_info for this ID.")
+            else:
+                new_name = st.text_input("Name", value=latest_info['patient_name'])
+                new_age = st.number_input("Age", min_value=1, max_value=120, value=latest_info['age'])
                 gender_opts = ["Male", "Female", "Other"]
                 try:
-                    gender_idx = gender_opts.index(edit_record['gender'])
+                    gidx = gender_opts.index(latest_info['gender'])
                 except:
-                    gender_idx = 0
-                new_gender = st.selectbox("Gender", gender_opts, index=gender_idx)
-                new_contact = st.text_input("Contact Number", value=edit_record['contact_number'])
+                    gidx = 0
+                new_gender = st.selectbox("Gender", gender_opts, index=gidx)
+                new_contact = st.text_input("Contact Number", value=latest_info['contact_number'])
 
                 dept_list = list(contexts.keys())
                 try:
-                    dept_idx = dept_list.index(edit_record['department'])
+                    didx = dept_list.index(latest_info['department'])
                 except:
-                    dept_idx = 0
-                new_dept = st.selectbox("Department", dept_list, index=dept_idx)
+                    didx = 0
+                new_dept = st.selectbox("Department", dept_list, index=didx)
 
-                new_chief = st.text_input("Chief Complaint", value=edit_record['chief_complaint'])
-                new_hpi = st.text_area("History of Presenting Illness", value=edit_record['history_of_presenting_illness'])
-                new_past = st.text_area("Past History", value=edit_record['past_history'])
-                new_pers = st.text_area("Personal History", value=edit_record['personal_history'])
-                new_fam = st.text_area("Family History", value=edit_record['family_history'])
+                new_chief = st.text_input("Chief Complaint", value=latest_info['chief_complaint'])
+                new_hpi = st.text_area("History of Presenting Illness", value=latest_info['history_of_presenting_illness'])
+                new_past = st.text_area("Past History", value=latest_info['past_history'])
+                new_pers = st.text_area("Personal History", value=latest_info['personal_history'])
+                new_fam = st.text_area("Family History", value=latest_info['family_history'])
 
                 new_obg = ""
                 if new_dept == "Gynecology":
-                    new_obg = st.text_area("OBG History", value=edit_record.get('obg_history',''))
+                    new_obg = st.text_area("OBG History", value=latest_info.get('obg_history',''))
 
-                st.write("Optionally upload new files to replace existing ones:")
+                st.write("Optionally upload new files to be included in the new version:")
 
                 # Lab
-                new_lab_file = st.file_uploader("New Lab Report (PDF)", type=["pdf"], key=f"lab_{edit_record['id']}")
-                updated_lab_url = edit_record.get("lab_report_url", "")
+                new_lab_file = st.file_uploader("New Lab Report (PDF)", type=["pdf"], key=f"lab_{pat_id_edt}")
+                updated_lab_url = None
                 if new_lab_file:
                     pdfb = new_lab_file.read()
                     updated_lab_url = upload_to_s3(pdfb, new_lab_file.name)
-                    st.info("New lab PDF uploaded.")
+                    st.info("New Lab PDF uploaded.")
 
                 # Imaging
-                new_img_file = st.file_uploader("New Imaging (PNG/JPG)", type=["png","jpg","jpeg"], key=f"img_{edit_record['id']}")
-                updated_img_url = edit_record.get("medical_imaging_url", "")
+                new_img_file = st.file_uploader("New Imaging (PNG/JPG)", type=["png","jpg","jpeg"], key=f"img_{pat_id_edt}")
+                updated_img_url = None
                 if new_img_file:
                     rawb = new_img_file.read()
                     dsb = downsample_image(rawb)
@@ -1028,17 +1423,21 @@ elif tab_selection == "Search Patient Records":
                     st.image(dsb, caption="Updated Imaging Preview")
 
                 # Prescription
-                new_pres_file = st.file_uploader("New Prescription (PDF/PNG/JPG)", type=["pdf","png","jpg","jpeg"], key=f"pres_{edit_record['id']}")
-                updated_presc_url = edit_record.get("previous_prescription_url", "")
+                new_pres_file = st.file_uploader("New Prescription (PDF/PNG/JPG)", type=["pdf","png","jpg","jpeg"], key=f"pres_{pat_id_edt}")
+                updated_presc_url = None
                 if new_pres_file:
                     pb = new_pres_file.read()
                     updated_presc_url = upload_to_s3(pb, new_pres_file.name)
                     st.info("New prescription uploaded.")
 
-                if st.button(f"Save Changes for ID {edit_record['id']}", key=f"save_{edit_record['id']}"):
+                if st.button("Save New Version", key=f"save_{pat_id_edt}"):
                     try:
+                        final_lab_url = updated_lab_url or latest_info.get("lab_report_url")
+                        final_img_url = updated_img_url or latest_info.get("medical_imaging_url")
+                        final_pres_url = updated_presc_url or latest_info.get("previous_prescription_url")
+
                         update_patient_info(
-                            patient_id=edit_record['id'],
+                            patient_id=pat_id_edt,
                             name=new_name,
                             age=new_age,
                             gender=new_gender,
@@ -1050,11 +1449,11 @@ elif tab_selection == "Search Patient Records":
                             personal_history=new_pers,
                             family_history=new_fam,
                             obg_history=new_obg,
-                            lab_report_url=updated_lab_url,
-                            medical_imaging_url=updated_img_url,
-                            previous_prescription_url=updated_presc_url
+                            lab_report_url=final_lab_url,
+                            medical_imaging_url=final_img_url,
+                            previous_prescription_url=final_pres_url
                         )
-                        st.success("Record updated successfully.")
+                        st.success("New version created; 'latest' record updated successfully.")
                     except Exception as e:
                         st.error(f"Update failed: {e}")
 
