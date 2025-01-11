@@ -1,3 +1,5 @@
+from datetime import time
+import time
 import os
 import io
 import re
@@ -15,6 +17,8 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import boto3
 from openai import OpenAI
+import json
+from sqlalchemy import text
 
 # -------------------------------------------------- #
 #              OPENAI CLIENT CONFIG                  #
@@ -655,6 +659,8 @@ def get_medical_advice(
     past_history,
     personal_history,
     family_history,
+    age,
+    gender,
     obg_history="",
     image_analysis_text="",
     lab_analysis_text="",
@@ -668,7 +674,8 @@ def get_medical_advice(
     prompt_text = f"""
 Department: {department}
 Context: {context}
-
+Age: {age}
+Gender: {gender}
 Chief Complaint: {chief_complaint}
 History of Presenting Illness: {history_presenting_illness}
 Past History: {past_history}
@@ -717,6 +724,57 @@ Return your response in bullet-point style with these headings:
         logging.error(f"Error generating medical advice: {e}")
         return "Error generating medical advice. Please try again later."
 
+def generate_prescription(diagnosis, tests, treatments, patient_info=None):
+    """
+    Generate a prescription using OpenAI's GPT model.
+    """
+    patient_info_str = (
+        f"Patient Name: {patient_info.get('name', 'Unknown')}, "
+        f"Age: {patient_info.get('age', 'Unknown')}, "
+        f"Gender: {patient_info.get('gender', 'Unknown')}" if patient_info else "No patient info provided."
+    )
+    
+    prompt = f"""
+    You are a medical expert. Based on the following details, generate a prescription:
+    Diagnosis: {diagnosis}
+    Patient Info: {patient_info_str}
+    Recommended Tests: {", ".join(tests)}
+    Proposed Treatments: {", ".join(treatments)}
+
+    Provide the following in your response:
+    1. A concise diagnosis.
+    2. A list of drugs and dosages (name, strength, frequency, and duration).
+    3. Specific instructions on how to take each drug.
+    4. Any follow-up instructions (e.g., when to return, what to monitor).
+    5. A list of recommended tests, if applicable.
+
+    Format your response as a JSON object with keys: 
+    'diagnosis', 'drugs', 'instructions', 'tests', 'follow_up'.
+    """
+    try:
+        messages = [
+            {"role": "system", "content": "You are ChatGPT, a helpful medical assistant."},
+            {"role": "user", "content": prompt}
+        ]
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=messages,
+            max_tokens=1800,
+            temperature=0.7
+        )
+        gpt_content = response.choices[0].message.content.strip()
+        import json
+        prescription = json.loads(gpt_content)
+        return prescription
+    except Exception as e:
+        return {
+            "diagnosis": diagnosis,
+            "drugs": [],
+            "instructions": [],
+            "tests": tests,
+            "follow_up": "Follow up with your doctor."
+        }
+
 # Parsing helper
 def parse_section(full_text, section_name):
     pattern = rf"\*\*{section_name}\*\*\s*\n?(.*?)(?=\n\*\*|$)"
@@ -747,7 +805,8 @@ tab_selection = st.sidebar.radio(
     [
         "Patient Information",
         "Diagnosis, Prognosis & Treatment",
-        "Search Patient Records"
+        "Search Patient Records",
+        "Prescription Writing"
     ]
 )
 
@@ -937,6 +996,8 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
 
                 # 4) final advice
                 advice_text = get_medical_advice(
+                    age=patient_data["age"],
+                    gender=patient_data["gender"],
                     department=patient_data["department"],
                     chief_complaint=patient_data["chief_complaint"],
                     history_presenting_illness=patient_data["history_presenting_illness"],
@@ -1046,6 +1107,11 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
 
             final_tests_str = ", ".join(selected_tests)
             final_treatment_str = ", ".join(selected_treats)
+
+            # Store the selections in session state
+            st.session_state["final_diagnosis"] = final_dx
+            st.session_state["selected_tests"] = selected_tests
+            st.session_state["selected_treats"] = selected_treats
 
             if st.button("Save Selections"):
                 pid = patient_data.get("id")
@@ -1390,3 +1456,167 @@ elif tab_selection == "Search Patient Records":
                         st.success("New version created; 'latest' record updated successfully.")
                     except Exception as e:
                         st.error(f"Update failed: {e}")
+
+# ---------------------------------------
+# 4) PRESCRIPTION WRITING TAB
+# ---------------------------------------
+elif tab_selection == "Prescription Writing":
+    st.header("Prescription Writing")
+
+    # Fetch Patient Data
+    patient_data = st.session_state.get("patient_data", {})
+    if not patient_data.get("name"):
+        st.warning("Please fill out 'Patient Information' first.")
+        st.stop()
+
+
+    # Debugging: Check values in Streamlit UI
+    # st.write("Debugging Information:")
+    # st.write("Final Diagnosis:", st.session_state.get("final_diagnosis", "Not Set"))
+    # st.write("Selected Tests:", st.session_state.get("selected_tests", "Not Set"))
+    # st.write("Selected Treatments:", st.session_state.get("selected_treats", "Not Set"))
+    # st.write("Selected Treatments:", st.session_state.get("final_diagnosis_radio", "Not Set"))
+    # st.write("Selected Treatments:", st.session_state.get("final_tests", "Not Set"))
+    # st.write("Selected Treatments:", st.session_state.get("final_treatment_plan", "Not Set"))
+    # st.write("Selected Treatments:", st.session_state.get("final_dx", "Not Set"))
+    # st.write("Selected Treatments:", st.session_state.get("final_tests_str", "Not Set"))
+    # st.write("Selected Treatments:", st.session_state.get("final_treatment_str", "Not Set"))
+
+
+    # Generate Prescription
+    if st.button("Generate Prescription"):
+        with st.spinner("Generating prescription..."):
+            gpt_prescription = generate_prescription(
+                diagnosis=st.session_state.get("final_diagnosis", ""),
+                tests=st.session_state.get("selected_tests", []),
+                treatments=st.session_state.get("selected_treats", []),
+                patient_info={
+                    "name": patient_data.get("name", ""),
+                    "age": patient_data.get("age", ""),
+                    "gender": patient_data.get("gender", "")
+                }
+            )
+
+            # print("Hello, it should appear somewhere here")
+            # print(gpt_prescription)
+            # Store generated prescription in session state
+            st.session_state["prescription"] = gpt_prescription
+            st.success("Prescription generated successfully!")
+
+    # Retrieve or initialize the prescription data
+    prescription = st.session_state.get("prescription", {
+        "diagnosis": "",
+        "drugs": [],
+        # "instructions": [],
+        "tests": [],
+        "follow_up": ""
+    })
+
+    # Debugging output (can be removed in production)
+    # st.write("Debugging Prescription Data:", prescription)
+
+    # Display and edit prescription fields
+    diagnosis = st.text_input(
+        "Diagnosis", 
+        value=prescription.get("diagnosis", ""),
+        key="diagnosis_input"
+    )
+    # Convert drug dictionaries to string format for display
+    drugs_list = [
+        f"{drug['name']} - {drug['strength']} ({drug['frequency']}, {drug['duration']})"
+        for drug in prescription.get("drugs", [])
+    ]
+    drugs = st.text_area(
+        "Drugs & Dosages (One per line)",
+        value="\n".join(drugs_list),
+        placeholder="E.g., Drug A - 500mg twice daily",
+        key="drugs_input"
+    )
+
+    tests_list = [
+        f"{test.get('name', 'Unknown Test')} - {test.get('reason', 'No reason provided')}"
+        for test in prescription.get("tests", [])
+    ]
+    tests = st.text_area(
+        "Recommended Tests",
+        value="\n".join(tests_list),
+        placeholder="E.g., Blood sugar, X-ray",
+        key="tests_input"
+    )
+
+    follow_up = st.text_area(
+        "Follow-Up Instructions",
+        value=prescription.get("follow_up", ""),
+        placeholder="E.g., Return in 2 weeks with test results.",
+        key="follow_up_input"
+    )
+
+    # Save Prescription to Database
+    if st.button("Save Prescription"):
+        prescription_data = {
+            "diagnosis": diagnosis,
+            "drugs": [line.strip() for line in drugs.split("\n") if line.strip()],
+            # "instructions": [line.strip() for line in instructions.split("\n") if line.strip()],
+            "tests": [test.strip() for test in tests.split(",") if test.strip()],
+            "follow_up": follow_up.strip()
+        }
+        st.session_state["prescription"] = prescription_data  # Update session state
+
+        # Generate PDF
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        import io
+
+        def create_pdf(data):
+            pdf_buffer = io.BytesIO()
+            pdf = canvas.Canvas(pdf_buffer, pagesize=letter)
+            pdf.setFont("Helvetica-Bold", 16)
+            pdf.drawString(50, 750, f"Prescription for: {patient_data.get('name', 'Unknown')}")
+            pdf.setFont("Helvetica", 12)
+            y = 720
+            pdf.drawString(50, y, f"Diagnosis: {data['diagnosis']}")
+            y -= 20
+            pdf.drawString(50, y, "Drugs & Dosages:")
+            for drug in data['drugs']:
+                y -= 15
+                pdf.drawString(60, y, f"- {drug}")
+            y -= 20
+            pdf.drawString(50, y, f"Recommended Tests: {', '.join(data['tests'])}")
+            y -= 20
+            pdf.drawString(50, y, f"Follow-Up Instructions: {data['follow_up']}")
+            pdf.save()
+            pdf_buffer.seek(0)
+            return pdf_buffer.read()
+
+        pdf_data = create_pdf(prescription_data)
+
+        # Upload to S3
+        try:
+            file_name = f"Prescription_{patient_data.get('name', 'Unknown')}_{int(time.time())}.pdf"
+            lab_report_url = upload_to_s3(pdf_data, file_name)
+
+            # Save URL to database
+            if "id" in patient_data:
+                update_query = text("""
+                    UPDATE patient_info
+                    SET previous_prescription_url = :file_url
+                    WHERE id = :pid
+                """)
+                with engine.begin() as conn:
+                    conn.execute(update_query, {
+                        'file_url': lab_report_url,
+                        'pid': patient_data["id"]
+                    })
+
+            # st.success(f"Prescription saved and uploaded successfully! URL: {lab_report_url}")
+
+            # Provide download option for the generated PDF
+            st.download_button(
+                label="Download Prescription PDF",
+                data=pdf_data,
+                file_name=f"Prescription_{patient_data.get('name', 'Unknown')}.pdf",
+                mime="application/pdf"
+            )
+
+        except Exception as e:
+            st.error(f"Error saving prescription: {e}")
