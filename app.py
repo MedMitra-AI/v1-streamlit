@@ -19,6 +19,7 @@ from openai import OpenAI
 # -------------------------------------------------- #
 #              OPENAI CLIENT CONFIG                  #
 # -------------------------------------------------- #
+
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 # ---------------------------------------
 #    LOGGING AND ENVIRONMENT SETUP
