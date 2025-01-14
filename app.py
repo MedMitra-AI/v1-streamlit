@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-DATABASE_URI = os.getenv("DATABASE_URI")
+DATABASE_URI = os.getenv("DATABASE_URI", "postgresql://postgres:Medmitra123%23@patientrecords.cte8m8wug3oq.us-east-1.rds.amazonaws.com:5432/postgres")
 if not DATABASE_URI:
     logger.warning("DATABASE_URI not set.")
 engine = create_engine(DATABASE_URI, echo=False)
