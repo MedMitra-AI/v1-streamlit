@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-DATABASE_URI = os.getenv("DATABASE_URI", "postgresql://user:pass@localhost/dbname")
+DATABASE_URI = os.getenv("DATABASE_URI")
 if not DATABASE_URI:
     logger.warning("DATABASE_URI not set.")
 engine = create_engine(DATABASE_URI, echo=False)
