@@ -12,15 +12,14 @@ import requests
 import streamlit as st
 from PIL import Image
 from sqlalchemy import create_engine, text
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 import boto3
 from openai import OpenAI
 
 # -------------------------------------------------- #
 #              OPENAI CLIENT CONFIG                  #
 # -------------------------------------------------- #
-client = OpenAI(api_key="sk-proj-aA4in0l2WCEkJXq4yeHAT3BlbkFJmwOhRnH8ypgJpolet2Nb")
-
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 # ---------------------------------------
 #    LOGGING AND ENVIRONMENT SETUP
 # ---------------------------------------
@@ -31,17 +30,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+#load_dotenv()
 
-DATABASE_URI = os.getenv("DATABASE_URI", "postgresql://postgres:Medmitra123%23@patientrecords.cte8m8wug3oq.us-east-1.rds.amazonaws.com:5432/postgres")
-if not DATABASE_URI:
-    logger.warning("DATABASE_URI not set.")
+# DATABASE_URI = os.getenv("DATABASE_URI", "postgresql://postgres:Medmitra123%23@patientrecords.cte8m8wug3oq.us-east-1.rds.amazonaws.com:5432/postgres")
+# if not DATABASE_URI:
+#     logger.warning("DATABASE_URI not set.")
+
+
+# aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "YOUR_AWS_ACCESS_KEY")
+# aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "YOUR_AWS_SECRET")
+# aws_region = os.getenv("AWS_REGION", "us-east-1")
+# bucket_name = os.getenv("AWS_BUCKET_NAME", "your-s3-bucket")
+
+DATABASE_URI = st.secrets["DATABASE_URI"]
+aws_access_key_id = st.secrets["AWS_ACCESS_KEY_ID"]
+aws_secret_access_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
+aws_region = st.secrets["AWS_REGION"]
+bucket_name = st.secrets["AWS_BUCKET_NAME"]
+
 engine = create_engine(DATABASE_URI, echo=False)
 
-aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "YOUR_AWS_ACCESS_KEY")
-aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "YOUR_AWS_SECRET")
-aws_region = os.getenv("AWS_REGION", "us-east-1")
-bucket_name = os.getenv("AWS_BUCKET_NAME", "your-s3-bucket")
 
 s3_client = boto3.client(
     's3',
