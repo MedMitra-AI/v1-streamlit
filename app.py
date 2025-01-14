@@ -55,8 +55,12 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+
+openai_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_key)
+
 # Fetch keys from environment variables
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 DATABASE_URI = os.getenv("DATABASE_URI")
 aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
 aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
