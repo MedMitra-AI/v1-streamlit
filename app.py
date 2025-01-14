@@ -46,17 +46,17 @@ logger = logging.getLogger(__name__)
 # # aws_region = os.getenv("AWS_REGION", "us-east-1")
 # # bucket_name = os.getenv("AWS_BUCKET_NAME", "your-s3-bucket")
 
-# DATABASE_URI = st.secrets["DATABASE_URI"]
-# aws_access_key_id = st.secrets["AWS_ACCESS_KEY_ID"]
-# aws_secret_access_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
-# aws_region = st.secrets["AWS_REGION"]
-# bucket_name = st.secrets["AWS_BUCKET_NAME"]
+DATABASE_URI = st.secrets["DATABASE_URI"]
+aws_access_key_id = st.secrets["AWS_ACCESS_KEY_ID"]
+aws_secret_access_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
+aws_region = st.secrets["AWS_REGION"]
+bucket_name = st.secrets["AWS_BUCKET_NAME"]
 
 
-load_dotenv()
+# load_dotenv()
 
 
-openai_key = os.getenv("OPENAI_API_KEY")
+openai_key = st.secrets["OPENAI_API_KEY"]
 client = OpenAI(api_key=openai_key)
 
 # Fetch keys from environment variables
