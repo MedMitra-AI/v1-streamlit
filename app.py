@@ -16,8 +16,6 @@ from sqlalchemy import create_engine, text
 import boto3
 from openai import OpenAI
 
-from dotenv import load_dotenv
-
 
 # -------------------------------------------------- #
 #              OPENAI CLIENT CONFIG                  #
@@ -61,19 +59,19 @@ client = OpenAI(api_key=openai_key)
 
 # Fetch keys from environment variables
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-DATABASE_URI = os.getenv("DATABASE_URI")
-aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
-aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-aws_region = os.getenv("AWS_REGION")
-bucket_name = os.getenv("AWS_BUCKET_NAME")
+# DATABASE_URI = os.getenv("DATABASE_URI")
+# aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+# aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+# aws_region = os.getenv("AWS_REGION")
+# bucket_name = os.getenv("AWS_BUCKET_NAME")
 
-# Test by printing variables (for debugging only, avoid logging sensitive information in production)
-print("API Key:", os.getenv("OPENAI_API_KEY"))
-print("Database URI:", DATABASE_URI)
-print("AWS Access Key ID:", aws_access_key_id)
-print("AWS Secret Access Key:", aws_secret_access_key)
-print("AWS Region:", aws_region)
-print("Bucket Name:", bucket_name)
+# # Test by printing variables (for debugging only, avoid logging sensitive information in production)
+# print("API Key:", os.getenv("OPENAI_API_KEY"))
+# print("Database URI:", DATABASE_URI)
+# print("AWS Access Key ID:", aws_access_key_id)
+# print("AWS Secret Access Key:", aws_secret_access_key)
+# print("AWS Region:", aws_region)
+# print("Bucket Name:", bucket_name)
 
 engine = create_engine(DATABASE_URI, echo=False)
 
