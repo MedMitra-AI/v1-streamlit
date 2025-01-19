@@ -1,3 +1,4 @@
+import streamlit as st
 from datetime import time
 import time as pytime
 import os
@@ -11,7 +12,6 @@ from datetime import datetime
 
 import pdfplumber
 import requests
-import streamlit as st
 from PIL import Image
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -27,10 +27,13 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.colors import black
 
+load_dotenv()
+
 # -------------------------------------------------- #
 #              OPENAI CLIENT CONFIG                  #
 # -------------------------------------------------- #
-client = OpenAI(api_key="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")
+# api_key = os.getenv("OPENAI_API_KEY")
+# client = OpenAI(api_key=api_key)
 
 # ---------------------------------------
 #    LOGGING AND ENVIRONMENT SETUP
@@ -42,7 +45,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-load_dotenv()
 
 DATABASE_URI = os.getenv("DATABASE_URI", "postgresql://postgres:Medmitra123%23@patientrecords.cte8m8wug3oq.us-east-1.rds.amazonaws.com:5432/postgres")
 if not DATABASE_URI:
@@ -156,7 +158,6 @@ def extract_text_from_pdf(pdf_file):
 # ---------------------------------------
 #        DATABASE FUNCTIONS
 # ---------------------------------------
-
 def insert_patient_version(
     patient_id,
     name,
@@ -731,11 +732,43 @@ Return your response in bullet-point style with these headings:
         logging.error(f"Error generating medical advice: {e}")
         return "Error generating medical advice. Please try again later."
 
+###
+### IMPORTANT: Updated to return “tests” as an array of objects, and “follow_up” as an object
+###
 def generate_prescription(diagnosis, tests, treatments, patient_info=None):
     """
     Generate a prescription using OpenAI's GPT model.
-    The GPT response typically includes a JSON structure with keys:
-    'diagnosis', 'drugs', 'instructions', 'tests', 'follow_up'.
+
+    We request a JSON structure with:
+      - 'diagnosis' (string)
+      - 'drugs' (array of objects with {name, strength, frequency, duration})
+      - 'tests' (array of objects with {name, purpose})
+      - 'follow_up' (object with {when_to_return, what_to_monitor})
+
+    Example of the final GPT output:
+    {
+      "diagnosis": "Stable angina",
+      "drugs": [
+        {
+          "name": "Aspirin",
+          "strength": "75 mg",
+          "frequency": "once daily",
+          "duration": "long-term"
+        },
+        ...
+      ],
+      "tests": [
+        {
+          "name": "Exercise stress test",
+          "purpose": "To assess for inducible ischemia during exertion"
+        },
+        ...
+      ],
+      "follow_up": {
+        "when_to_return": "In 3 months or earlier if symptoms worsen",
+        "what_to_monitor": "Chest pain, blood pressure, and any side effects of medications"
+      }
+    }
     """
     patient_info_str = (
         f"Patient {patient_info.get('name', 'Unknown')}, aged {patient_info.get('age', 'Unknown')}, "
@@ -747,18 +780,31 @@ def generate_prescription(diagnosis, tests, treatments, patient_info=None):
     You are a medical expert. Based on the following details, generate a prescription:
     Diagnosis: {diagnosis}
     Patient Info: {patient_info_str}
-    Recommended Tests: {", ".join(tests)}
-    Proposed Treatments: {", ".join(treatments)}
+    Recommended Tests: {tests}
+    Proposed Treatments: {treatments}
 
-    Provide the following in your response:
-    1. A concise diagnosis.
-    2. A list of drugs and dosages (name, strength, frequency, and duration).
-    3. Specific instructions on how to take each drug.
-    4. Any follow-up instructions (e.g., when to return, what to monitor).
-    5. A list of recommended tests, if applicable.
+    Please return valid JSON with these keys:
+      - "diagnosis" (string)
+      - "drugs" (array of objects, each with "name", "strength", "frequency", "duration")
+      - "tests" (array of objects, each with "name" and "purpose")
+      - "follow_up" (an object with "when_to_return" and "what_to_monitor")
 
-    Format your response as a JSON object with keys: 
-    'diagnosis', 'drugs', 'instructions', 'tests', 'follow_up'.
+    Example structure:
+    {{
+      "diagnosis": "...",
+      "drugs": [
+         {{ "name": "...", "strength": "...", "frequency": "...", "duration": "..." }},
+         ...
+      ],
+      "tests": [
+         {{ "name": "...", "purpose": "..." }},
+         ...
+      ],
+      "follow_up": {{
+         "when_to_return": "...",
+         "what_to_monitor": "..."
+      }}
+    }}
     """
     try:
         messages = [
@@ -772,15 +818,20 @@ def generate_prescription(diagnosis, tests, treatments, patient_info=None):
             temperature=0.7
         )
         gpt_content = response.choices[0].message.content.strip()
+        # Attempt to parse the JSON
         prescription = json.loads(gpt_content)
         return prescription
     except Exception as e:
+        # Fallback if JSON parsing fails
+        logger.error(f"Error in generate_prescription: {e}")
         return {
             "diagnosis": diagnosis,
             "drugs": [],
-            "instructions": [],
-            "tests": tests,
-            "follow_up": "Follow up with your doctor."
+            "tests": [],
+            "follow_up": {
+                "when_to_return": "N/A",
+                "what_to_monitor": "N/A"
+            }
         }
 
 # Helpers to parse GPT advice
@@ -1469,7 +1520,20 @@ elif tab_selection == "Prescription Writing":
         st.warning("Please fill out 'Patient Information' first.")
         st.stop()
 
-    # Generate Prescription
+    # Provide placeholders for the final prescription structure
+    # we expect JSON with: diagnosis, drugs (list of dicts), tests (list of dicts), follow_up (dict)
+    if "prescription" not in st.session_state:
+        st.session_state["prescription"] = {
+            "diagnosis": "",
+            "drugs": [],
+            "tests": [],
+            "follow_up": {"when_to_return": "", "what_to_monitor": ""}
+        }
+
+    # Make sure we pick up any previously saved prescription
+    prescription = st.session_state["prescription"]
+
+    # Button to auto-generate from GPT
     if st.button("Generate Prescription"):
         with st.spinner("Generating prescription..."):
             gpt_prescription = generate_prescription(
@@ -1484,65 +1548,43 @@ elif tab_selection == "Prescription Writing":
             )
             st.session_state["prescription"] = gpt_prescription
             st.success("Prescription generated successfully!")
+            prescription = gpt_prescription
 
-    # Retrieve or initialize the prescription data
-    prescription = st.session_state.get("prescription", {
-        "diagnosis": "",
-        "drugs": [],
-        "tests": [],
-        "follow_up": ""
-    })
+    # Let the user edit the JSON fields directly:
+    st.subheader("Prescription Fields")
 
-    # Convert each drug dictionary (if any) to a single string
-    drugs_list = []
-    for d in prescription.get("drugs", []):
-        if isinstance(d, dict):
-            # For example: "Amoxicillin - 500 mg (3 times a day, 10 days)"
-            line = f"{d.get('name','Unknown')} - {d.get('strength','')} ({d.get('frequency','')}, {d.get('duration','')})"
-            drugs_list.append(line)
-        else:
-            drugs_list.append(str(d))
-
-    diagnosis = st.text_input(
-        "Diagnosis", 
-        value=prescription.get("diagnosis", ""),
-        key="diagnosis_input"
+    # Diagnosis
+    diagnosis = st.text_input("Diagnosis", value=prescription.get("diagnosis",""))
+    
+    # Drugs as JSON array
+    drugs_json_str = json.dumps(prescription.get("drugs", []), indent=2)
+    drugs_text = st.text_area(
+        label="Drugs (JSON array)",
+        value=drugs_json_str,
+        height=150
     )
 
-    drugs_str = "\n".join(drugs_list)
-    drugs = st.text_area(
-        "Drugs & Dosages (One per line)",
-        value=drugs_str,
-        placeholder="E.g., Drug A - 500mg twice daily",
-        key="drugs_input"
+    # Tests as JSON array
+    tests_json_str = json.dumps(prescription.get("tests", []), indent=2)
+    tests_text = st.text_area(
+        label="Recommended Tests (JSON array of {name, purpose})",
+        value=tests_json_str,
+        height=150
     )
 
-    # We'll store tests as comma-separated for editing
-    tests_list = []
-    for t in prescription.get("tests", []):
-        tests_list.append(str(t))
-
-    tests_str = ", ".join(tests_list)
-    tests = st.text_area(
-        "Recommended Tests (comma-separated)",
-        value=tests_str,
-        placeholder="E.g., Blood sugar, X-ray",
-        key="tests_input"
+    # Follow-up as JSON object
+    followup_json_str = json.dumps(prescription.get("follow_up", {}), indent=2)
+    followup_text = st.text_area(
+        label="Follow-Up Instructions (JSON object {when_to_return, what_to_monitor})",
+        value=followup_json_str,
+        height=150
     )
 
-    follow_up = st.text_area(
-        "Follow-Up Instructions",
-        value=prescription.get("follow_up", ""),
-        placeholder="E.g., Return in 2 weeks with test results.",
-        key="follow_up_input"
-    )
-
-    # NEW: We'll define a function that creates the PDF with:
-    # - Centered text
-    # - Smaller font
-    # - Light purple background
+    # PDF generation function
     def create_pdf(data):
-        # Use reportlab's "platypus" approach to easily center & wrap text
+        """
+        Build a PDF with test & follow-up info in the new structured format.
+        """
         pdf_buffer = io.BytesIO()
         doc = SimpleDocTemplate(
             pdf_buffer,
@@ -1553,84 +1595,88 @@ elif tab_selection == "Prescription Writing":
             bottomMargin=30,
         )
 
-        # This function will fill the page background with light purple
-        # def draw_bg(canvas, doc):
-        #     page_width, page_height = letter
-        #     # Light purple
-        #     canvas.setFillColorRGB(0.9, 0.8, 0.95)
-        #     canvas.rect(0, 0, page_width, page_height, fill=1, stroke=0)
-
         styles = getSampleStyleSheet()
-        # Custom style: smaller font (10), center-aligned
         center_style = ParagraphStyle(
             'CenterStyle',
             parent=styles['Normal'],
             fontName='Helvetica',
             fontSize=10,
             leading=14,
-            alignment=1,  # 1 = center
+            alignment=1,  # center
             textColor=black,
         )
 
-        # Build the Flowable list
         flowables = []
-
         # Title
-        flowables.append(Paragraph(f"<b>Prescription for:</b> {patient_data.get('name', 'Unknown')}", center_style))
+        flowables.append(Paragraph(f"<b>Prescription for:</b> {patient_data.get('name','Unknown')}", center_style))
         flowables.append(Spacer(1, 12))
 
-        # Show a diagnosis line
-        flowables.append(Paragraph(f"<b>Diagnosis:</b> {data['diagnosis']}", center_style))
+        # Diagnosis
+        flowables.append(Paragraph(f"<b>Diagnosis:</b> {data.get('diagnosis','')}", center_style))
         flowables.append(Spacer(1, 8))
 
-        # Drugs (bullets, each line)
+        # Drugs
         flowables.append(Paragraph("<b>Drugs & Dosages:</b>", center_style))
-        for drug in data['drugs']:
-            flowables.append(Paragraph(f"- {drug}", center_style))
+        for d in data.get("drugs", []):
+            dname = d.get("name","N/A")
+            dstrength = d.get("strength","N/A")
+            dfreq = d.get("frequency","N/A")
+            ddur = d.get("duration","N/A")
+            line = f"- {dname}, {dstrength}, {dfreq}, {ddur}"
+            flowables.append(Paragraph(line, center_style))
         flowables.append(Spacer(1, 8))
 
-        # Recommended Tests
-        tests_joined = ', '.join(data['tests'])
-        flowables.append(Paragraph(f"<b>Recommended Tests:</b> {tests_joined}", center_style))
+        # Tests
+        flowables.append(Paragraph("<b>Recommended Tests:</b>", center_style))
+        for t in data.get("tests", []):
+            tname = t.get("name","N/A")
+            tpurpose = t.get("purpose","")
+            line = f"- {tname} (Purpose: {tpurpose})"
+            flowables.append(Paragraph(line, center_style))
         flowables.append(Spacer(1, 8))
 
         # Follow-up
-        flowables.append(Paragraph(f"<b>Follow-Up Instructions:</b> {data['follow_up']}", center_style))
-        flowables.append(Spacer(1, 12))
+        fup = data.get("follow_up", {})
+        ret_when = fup.get("when_to_return", "N/A")
+        monitor_what = fup.get("what_to_monitor", "N/A")
+        flowables.append(Paragraph("<b>Follow-Up Instructions:</b>", center_style))
+        flowables.append(Paragraph(f"Next Visit: {ret_when} | Monitor: {monitor_what}", center_style))
 
-        # Build the document with background
+        flowables.append(Spacer(1, 12))
         doc.build(flowables)
         pdf_value = pdf_buffer.getvalue()
         pdf_buffer.close()
         return pdf_value
 
-    # Save Prescription to Database (and optionally download)
+    # Button to save and/or generate PDF
     if st.button("Save Prescription"):
-        # Convert text area lines back to a list of strings
-        lines = drugs.split("\n")
-        drug_lines = [line.strip() for line in lines if line.strip()]
-        test_items = [test.strip() for test in tests.split(",") if test.strip()]
+        try:
+            # Attempt to parse user-edited JSON
+            updated_drugs = json.loads(drugs_text)
+            updated_tests = json.loads(tests_text)
+            updated_followup = json.loads(followup_text)
+        except Exception as e:
+            st.error(f"Invalid JSON in one of the fields: {e}")
+            st.stop()
 
-        prescription_data = {
+        # Update in session
+        new_prescription = {
             "diagnosis": diagnosis.strip(),
-            "drugs": drug_lines,
-            "tests": test_items,
-            "follow_up": follow_up.strip()
+            "drugs": updated_drugs,
+            "tests": updated_tests,
+            "follow_up": updated_followup
         }
+        st.session_state["prescription"] = new_prescription
 
-        # Update session state
-        st.session_state["prescription"] = prescription_data
-        st.success("Prescription data updated in session.")
+        # Generate PDF
+        pdf_data = create_pdf(new_prescription)
 
-        # Generate PDF with the new function
-        pdf_data = create_pdf(prescription_data)
-
-        # Upload to S3
+        # Upload the PDF to S3
         try:
             file_name = f"Prescription_{patient_data.get('name', 'Unknown')}_{int(pytime.time())}.pdf"
             presc_url = upload_to_s3(pdf_data, file_name)
 
-            # If we want to store it in the DB as the "previous_prescription_url"
+            # Optionally store in DB as the "previous_prescription_url"
             if "id" in patient_data:
                 update_query = text("""
                     UPDATE patient_info
@@ -1645,7 +1691,7 @@ elif tab_selection == "Prescription Writing":
 
             st.success(f"Prescription PDF uploaded successfully to S3! URL: {presc_url}")
 
-            # Provide download option for the generated PDF
+            # Provide download option
             st.download_button(
                 label="Download Prescription PDF",
                 data=pdf_data,
