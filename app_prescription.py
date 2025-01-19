@@ -32,8 +32,8 @@ load_dotenv()
 # -------------------------------------------------- #
 #              OPENAI CLIENT CONFIG                  #
 # -------------------------------------------------- #
-api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key)
+# api_key = os.getenv("OPENAI_API_KEY")
+# client = OpenAI(api_key=api_key)
 
 # ---------------------------------------
 #    LOGGING AND ENVIRONMENT SETUP
