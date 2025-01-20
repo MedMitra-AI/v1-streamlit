@@ -52,19 +52,29 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------
 #      SECRETS / CONFIG VIA Streamlit
 # ---------------------------------------
-openai_key = os.getenv("OPENAI_API_KEY")
+# openai_key = os.getenv("OPENAI_API_KEY")
+# client = OpenAI(api_key=openai_key)
+
+
+# DATABASE_URI = os.getenv("DATABASE_URI", "postgresql://postgres:Medmitra123%23@patientrecords.cte8m8wug3oq.us-east-1.rds.amazonaws.com:5432/postgres")
+# if not DATABASE_URI:
+#     logger.warning("DATABASE_URI not set.")
+
+
+# aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "YOUR_AWS_ACCESS_KEY")
+# aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "YOUR_AWS_SECRET")
+# aws_region = os.getenv("AWS_REGION", "us-east-1")
+# bucket_name = os.getenv("AWS_BUCKET_NAME", "your-s3-bucket")
+
+DATABASE_URI = st.secrets["DATABASE_URI"]
+aws_access_key_id = st.secrets["AWS_ACCESS_KEY_ID"]
+aws_secret_access_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
+aws_region = st.secrets["AWS_REGION"]
+bucket_name = st.secrets["AWS_BUCKET_NAME"]
+
+
+openai_key = st.secrets["OPENAI_API_KEY"]
 client = OpenAI(api_key=openai_key)
-
-
-DATABASE_URI = os.getenv("DATABASE_URI", "postgresql://postgres:Medmitra123%23@patientrecords.cte8m8wug3oq.us-east-1.rds.amazonaws.com:5432/postgres")
-if not DATABASE_URI:
-    logger.warning("DATABASE_URI not set.")
-
-
-aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "YOUR_AWS_ACCESS_KEY")
-aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "YOUR_AWS_SECRET")
-aws_region = os.getenv("AWS_REGION", "us-east-1")
-bucket_name = os.getenv("AWS_BUCKET_NAME", "your-s3-bucket")
 
 
 # Create the SQLAlchemy engine
