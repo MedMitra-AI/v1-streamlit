@@ -27,15 +27,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.colors import black
 
-# Load environment variables from .env
-load_dotenv()
-
-# -------------------------------------------------- #
-#              OPENAI CLIENT CONFIG                  #
-# -------------------------------------------------- #
-api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key)
-
 # ---------------------------------------
 #    LOGGING AND ENVIRONMENT SETUP
 # ---------------------------------------
@@ -48,12 +39,25 @@ logger = logging.getLogger(__name__)
 
 # --------------------------------------------------
 #          READ VALUES FROM YOUR .env FILE
-# --------------------------------------------------
-DATABASE_URI = os.getenv("DATABASE_URI")
-aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
-aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-aws_region = os.getenv("AWS_REGION")
-bucket_name = os.getenv("AWS_BUCKET_NAME")
+#  --------------------------------------------------
+# load_dotenv()
+# DATABASE_URI = os.getenv("DATABASE_URI")
+# aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+# aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+# aws_region = os.getenv("AWS_REGION")
+# bucket_name = os.getenv("AWS_BUCKET_NAME")
+# api_key = os.getenv("OPENAI_API_KEY")
+# client = OpenAI(api_key=api_key)
+
+#stored values in github
+DATABASE_URI = st.secrets["DATABASE_URI"]
+aws_access_key_id = st.secrets["AWS_ACCESS_KEY_ID"]
+aws_secret_access_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
+aws_region = st.secrets["AWS_REGION"]
+bucket_name = st.secrets["AWS_BUCKET_NAME"]
+openai_key = st.secrets["OPENAI_API_KEY"]
+client = OpenAI(api_key=openai_key)
+
 
 # Set up the SQLAlchemy engine
 engine = create_engine(DATABASE_URI, echo=False)
