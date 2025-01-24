@@ -27,14 +27,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.colors import black
 
-load_dotenv()
-
-# -------------------------------------------------- #
-#              OPENAI CLIENT CONFIG                  #
-# -------------------------------------------------- #
-# api_key = os.getenv("OPENAI_API_KEY")
-# client = OpenAI(api_key=api_key)
-
 # ---------------------------------------
 #    LOGGING AND ENVIRONMENT SETUP
 # ---------------------------------------
@@ -45,21 +37,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --------------------------------------------------
+#          READ VALUES FROM YOUR .env FILE
+#  --------------------------------------------------
+# load_dotenv()
+# DATABASE_URI = os.getenv("DATABASE_URI")
+# aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+# aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+# aws_region = os.getenv("AWS_REGION")
+# bucket_name = os.getenv("AWS_BUCKET_NAME")
+# api_key = os.getenv("OPENAI_API_KEY")
+# client = OpenAI(api_key=api_key)
 
-
+# Stored values in GitHub
 DATABASE_URI = st.secrets["DATABASE_URI"]
 aws_access_key_id = st.secrets["AWS_ACCESS_KEY_ID"]
 aws_secret_access_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
 aws_region = st.secrets["AWS_REGION"]
 bucket_name = st.secrets["AWS_BUCKET_NAME"]
-
-
 openai_key = st.secrets["OPENAI_API_KEY"]
 client = OpenAI(api_key=openai_key)
 
-
+# Set up the SQLAlchemy engine
 engine = create_engine(DATABASE_URI, echo=False)
 
+# Set up the S3 client
 s3_client = boto3.client(
     's3',
     region_name=aws_region,
@@ -97,6 +99,58 @@ contexts = {
     "General Medicine": "Common conditions in general medicine include fever, unexplained pain, fatigue, weight changes, cough.",
     "Endocrinology": "Common conditions in endocrinology include diabetes, thyroid disorders, adrenal disorders, osteoporosis, hormone imbalances."
 }
+
+# ---------------------------------------
+#   COMMON CARDIOLOGY COMPLAINTS (LIST)
+# ---------------------------------------
+cardiology_complaints = [
+    "Chest Pain or Discomfort",
+    "Shortness of Breath (Dyspnea)",
+    "Palpitations",
+    "Syncope (Fainting)",
+    "Edema",
+    "Fatigue or Reduced Exercise Tolerance",
+    "Dizziness or Lightheadedness",
+    "Orthopnea or PND",
+    "Other"
+]
+
+# ---------------------------------------
+#   COMMON ENDOCRINOLOGY COMPLAINTS (LIST)
+# ---------------------------------------
+endocrinology_complaints = [
+    "Polyuria/Polydipsia (excessive urination/thirst)",
+    "Weight Changes (unexpected gain or loss)",
+    "Palpitations or Excess Sweating",
+    "Goiter or Thyroid Swelling",
+    "Menstrual Irregularities",
+    "Osteoporosis or Bone Pain",
+    "Other"
+]
+
+# ---------------------------------------
+#   COMMON GYNECOLOGY COMPLAINTS (LIST)
+# ---------------------------------------
+gynecology_complaints = [
+    "Irregular Menstruation",
+    "Pelvic Pain",
+    "Vaginal Discharge",
+    "Infertility",
+    "Menopause Symptoms",
+    "Other"
+]
+
+# ------------------------------------------------------
+#   NEW: COMMON GENERAL MEDICINE COMPLAINTS (MULTI-SELECT)
+# ------------------------------------------------------
+general_medicine_complaints = [
+    "Fever",
+    "Cough",
+    "Fatigue",
+    "Weight Changes",
+    "Body Aches / Unexplained Pain",
+    "Other"
+]
 
 # ---------------------------------------
 #        HELPER / UTILITY FUNCTIONS
@@ -536,7 +590,7 @@ def search_patients(name=None, age=None, gender=None, contact=None):
         params['gender'] = gender
     if contact:
         query += " AND contact_number ILIKE :contact"
-        params['contact'] = f"%{contact}%"
+        params['contact'] = f"%{contact}%" 
 
     with engine.connect() as conn:
         result = conn.execute(text(query), params)
@@ -736,43 +790,14 @@ Return your response in bullet-point style with these headings:
         logging.error(f"Error generating medical advice: {e}")
         return "Error generating medical advice. Please try again later."
 
-###
-### IMPORTANT: Updated to return “tests” as an array of objects, and “follow_up” as an object
-###
 def generate_prescription(diagnosis, tests, treatments, patient_info=None):
     """
     Generate a prescription using OpenAI's GPT model.
-
     We request a JSON structure with:
       - 'diagnosis' (string)
       - 'drugs' (array of objects with {name, strength, frequency, duration})
       - 'tests' (array of objects with {name, purpose})
       - 'follow_up' (object with {when_to_return, what_to_monitor})
-
-    Example of the final GPT output:
-    {
-      "diagnosis": "Stable angina",
-      "drugs": [
-        {
-          "name": "Aspirin",
-          "strength": "75 mg",
-          "frequency": "once daily",
-          "duration": "long-term"
-        },
-        ...
-      ],
-      "tests": [
-        {
-          "name": "Exercise stress test",
-          "purpose": "To assess for inducible ischemia during exertion"
-        },
-        ...
-      ],
-      "follow_up": {
-        "when_to_return": "In 3 months or earlier if symptoms worsen",
-        "what_to_monitor": "Chest pain, blood pressure, and any side effects of medications"
-      }
-    }
     """
     patient_info_str = (
         f"Patient {patient_info.get('name', 'Unknown')}, aged {patient_info.get('age', 'Unknown')}, "
@@ -858,6 +883,146 @@ def extract_bullet_items(section_text):
             items.append(line[2:].strip())
     return items
 
+
+def show_endocrinology_complaints():
+    """
+    Creates a dynamic Endocrinology complaints UI where:
+      - The user selects a complaint (or 'Other').
+      - If 'Other' is chosen, they must specify the complaint name.
+      - After entering Frequency, History, and Severity, a new row appears.
+      - The row label begins at Complaint_1, then Complaint_2, etc.
+      - No 'Entry #1' lines, and a smaller heading 'Chief Complaints'.
+    """
+
+    st.markdown("<p style='font-size:16px; font-weight:600;'>Chief Complaints</p>", unsafe_allow_html=True)
+
+    if "endo_rows" not in st.session_state:
+        st.session_state["endo_rows"] = [
+            {
+                "complaint": "",
+                "other_name": "",
+                "freq": "",
+                "hist": "",
+                "sev": "",
+                "row_completed": False
+            }
+        ]
+
+    COMPLAINT_OPTIONS = [
+        "Select Complaint",
+        "Polyuria/Polydipsia (excessive urination/thirst)",
+        "Weight Changes (unexpected gain or loss)",
+        "Palpitations or Excess Sweating",
+        "Goiter or Thyroid Swelling",
+        "Menstrual Irregularities",
+        "Osteoporosis or Bone Pain",
+        "Other"
+    ]
+
+    def is_valid_complaint(row):
+        """Return True if the user chose a real complaint, or 'Other' + filled other_name."""
+        c = row["complaint"]
+        if c in ("", "Select Complaint"):
+            return False
+        if c == "Other":
+            return row["other_name"].strip() != ""
+        return True
+
+    for i, row in enumerate(st.session_state["endo_rows"]):
+        # The label & keys for the row use i+1 to start from "Complaint_1"
+        row_index = i + 1  
+
+        # 1) Complaint selectbox
+        complaint_choice = st.selectbox(
+            label=f"Complaint_{row_index}",
+            options=COMPLAINT_OPTIONS,
+            index=(
+                COMPLAINT_OPTIONS.index(row["complaint"])
+                if row["complaint"] in COMPLAINT_OPTIONS
+                else 0
+            ),
+            key=f"endo_comp_select_{row_index}"
+        )
+        row["complaint"] = complaint_choice
+
+        # 2) If 'Other', user must specify
+        if complaint_choice == "Other":
+            other_val = st.text_input(
+                label=f"Specify Other_{row_index}",
+                value=row["other_name"],
+                key=f"endo_other_{row_index}"
+            )
+            row["other_name"] = other_val
+        else:
+            # Clear any leftover from a previous "Other" selection
+            row["other_name"] = ""
+
+        # 3) Only show Frequency/History/Severity if complaint is valid
+        if is_valid_complaint(row):
+            col_freq, col_hist, col_sev = st.columns(3)
+
+            with col_freq:
+                freq_val = st.text_input(
+                    "Frequency",
+                    value=row["freq"],
+                    key=f"freq_{row_index}"
+                )
+            with col_hist:
+                hist_val = st.text_input(
+                    "History",
+                    value=row["hist"],
+                    key=f"hist_{row_index}"
+                )
+            with col_sev:
+                sev_val = st.text_input(
+                    "Severity",
+                    value=row["sev"],
+                    key=f"sev_{row_index}"
+                )
+
+            row["freq"] = freq_val
+            row["hist"] = hist_val
+            row["sev"] = sev_val
+
+            # If user just finished typing severity for this row, mark completed
+            if sev_val.strip() and not row["row_completed"]:
+                row["row_completed"] = True
+                # If it's the last row, append a new blank row
+                if i == len(st.session_state["endo_rows"]) - 1:
+                    st.session_state["endo_rows"].append(
+                        {
+                            "complaint": "",
+                            "other_name": "",
+                            "freq": "",
+                            "hist": "",
+                            "sev": "",
+                            "row_completed": False
+                        }
+                    )
+        # else: complaint not valid => no freq/hist/sev
+
+        st.write("")  # a little space before next row
+
+    # Build final complaint string
+    complaint_chunks = []
+    for row in st.session_state["endo_rows"]:
+        if not is_valid_complaint(row):
+            continue
+        if row["complaint"] == "Other":
+            c_name = row["other_name"].strip() or "Other (unspecified)"
+        else:
+            c_name = row["complaint"]
+        line = f"{c_name} [Freq: {row['freq']}, Hist: {row['hist']}, Sev: {row['sev']}]"
+        complaint_chunks.append(line)
+
+    final_complaint_str = "; ".join(complaint_chunks)
+    st.markdown("**Preview:**")
+    st.write(final_complaint_str if final_complaint_str else "(No complaints entered)")
+
+    return final_complaint_str
+
+
+
 # ---------------------------------------
 #          STREAMLIT APP LAYOUT
 # ---------------------------------------
@@ -907,7 +1072,62 @@ if tab_selection == "Patient Information":
         gender_sel = st.selectbox("Gender*", ["Select Gender", "Male", "Female", "Other"])
         contact_number = st.text_input("Contact Number*", value="").strip()
 
-    chief_complaint = st.text_input("Chief Complaint*", value="")
+    # We'll build up chief_complaint_str differently depending on department
+    chief_complaint_str = ""
+
+    # Cardiology
+    if department == "Cardiology":
+        selected_complaints = st.multiselect("Chief Complaint(s)*", cardiology_complaints)
+
+        other_text = ""
+        if "Other" in selected_complaints:
+            other_text = st.text_input("If 'Other', please specify:")
+
+        final_list = [c for c in selected_complaints if c != "Other"]
+        if other_text.strip():
+            final_list.append(other_text.strip())
+
+        chief_complaint_str = ", ".join(final_list)
+
+    # =======================
+    # Endocrinology: NEW LOGIC
+    # =======================
+    elif department == "Endocrinology":
+        chief_complaint_str = show_endocrinology_complaints()
+
+    # Gynecology
+    elif department == "Gynecology":
+        selected_complaints = st.multiselect("Chief Complaint(s)*", gynecology_complaints)
+
+        other_text = ""
+        if "Other" in selected_complaints:
+            other_text = st.text_input("If 'Other', please specify:")
+
+        final_list = [c for c in selected_complaints if c != "Other"]
+        if other_text.strip():
+            final_list.append(other_text.strip())
+
+        chief_complaint_str = ", ".join(final_list)
+
+    # General Medicine
+    elif department == "General Medicine":
+        selected_complaints = st.multiselect("Chief Complaint(s)*", general_medicine_complaints)
+
+        other_text = ""
+        if "Other" in selected_complaints:
+            other_text = st.text_input("If 'Other', please specify:")
+
+        final_list = [c for c in selected_complaints if c != "Other"]
+        if other_text.strip():
+            final_list.append(other_text.strip())
+
+        chief_complaint_str = ", ".join(final_list)
+
+    # Other departments: simple text
+    else:
+        chief_complaint_str = st.text_input("Chief Complaint*", value="")
+
+    # Next fields
     history_presenting_illness = st.text_input("History of Presenting Illness*", value="")
     past_history = st.text_input("Past History*", value="")
     personal_history = st.text_input("Personal History*", value="")
@@ -971,6 +1191,8 @@ if tab_selection == "Patient Information":
 
     # Save
     if st.button("Save Patient Info"):
+        final_chief_complaint = chief_complaint_str if chief_complaint_str else chief_complaint_str
+
         if not name:
             st.error("Patient Name is required")
         elif age < 1:
@@ -979,7 +1201,7 @@ if tab_selection == "Patient Information":
             st.error("Please select a gender")
         elif not contact_number:
             st.error("Contact Number is required")
-        elif not chief_complaint:
+        elif not final_chief_complaint:
             st.error("Chief Complaint is required")
         elif not all([history_presenting_illness, past_history, personal_history, family_history]):
             st.error("Please fill in all required fields.")
@@ -990,7 +1212,7 @@ if tab_selection == "Patient Information":
                 "gender": gender_sel,
                 "contact_number": contact_number,
                 "department": department,
-                "chief_complaint": chief_complaint,
+                "chief_complaint": final_chief_complaint,
                 "history_presenting_illness": history_presenting_illness,
                 "past_history": past_history,
                 "personal_history": personal_history,
@@ -1012,7 +1234,7 @@ if tab_selection == "Patient Information":
                     gender=gender_sel,
                     contact_number=contact_number,
                     department=department,
-                    chief_complaint=chief_complaint,
+                    chief_complaint=final_chief_complaint,
                     history_presenting_illness=history_presenting_illness,
                     past_history=past_history,
                     personal_history=personal_history,
@@ -1026,7 +1248,6 @@ if tab_selection == "Patient Information":
                 st.success(f"Patient info saved successfully (ID: {new_id}).")
             except Exception as e:
                 st.error(f"Failed to save patient info: {e}")
-
 
 # ---------------------------------------
 # 2) DIAGNOSIS, PROGNOSIS & TREATMENT
@@ -1173,7 +1394,6 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
             final_tests_str = ", ".join(selected_tests)
             final_treatment_str = ", ".join(selected_treats)
 
-            # Store the selections in session state
             st.session_state["final_diagnosis"] = final_dx
             st.session_state["selected_tests"] = selected_tests
             st.session_state["selected_treats"] = selected_treats
@@ -1194,7 +1414,6 @@ elif tab_selection == "Diagnosis, Prognosis & Treatment":
                         st.success("Doctor's Final Choices & Case Summary Saved Successfully!")
                     except Exception as e:
                         st.error(f"DB update error: {e}")
-
 
 # ---------------------------------------
 # 3) SEARCH PATIENT RECORDS TAB
@@ -1448,7 +1667,33 @@ elif tab_selection == "Search Patient Records":
                     didx = 0
                 new_dept = st.selectbox("Department", dept_list, index=didx)
 
-                new_chief = st.text_input("Chief Complaint", value=latest_info['chief_complaint'])
+                # Multi‐select logic in editing for certain depts. (For brevity, showing existing approach)
+                if new_dept == "Cardiology":
+                    old_cc = latest_info['chief_complaint'] or ""
+                    selected_complaints = old_cc.split(",")
+                    st.write("Existing: ", selected_complaints)
+                    st.info("You can implement a similar multi-complaint logic here if desired.")
+                    updated_chief_complaint = st.text_input("Chief Complaint", value=old_cc)
+
+                elif new_dept == "Endocrinology":
+                    st.info("If you want to re-edit Endocrinology complaints with frequency/history/severity, you'd implement a similar approach here.")
+                    updated_chief_complaint = st.text_area("Chief Complaint", value=latest_info['chief_complaint'])
+
+                elif new_dept == "Gynecology":
+                    old_cc = latest_info['chief_complaint'] or ""
+                    selected_complaints = old_cc.split(",")
+                    st.write("Existing: ", selected_complaints)
+                    updated_chief_complaint = st.text_input("Chief Complaint", value=old_cc)
+
+                elif new_dept == "General Medicine":
+                    old_cc = latest_info['chief_complaint'] or ""
+                    selected_complaints = old_cc.split(",")
+                    st.write("Existing: ", selected_complaints)
+                    updated_chief_complaint = st.text_input("Chief Complaint", value=old_cc)
+
+                else:
+                    updated_chief_complaint = st.text_input("Chief Complaint", value=latest_info['chief_complaint'])
+
                 new_hpi = st.text_area("History of Presenting Illness", value=latest_info['history_of_presenting_illness'])
                 new_past = st.text_area("Past History", value=latest_info['past_history'])
                 new_pers = st.text_area("Personal History", value=latest_info['personal_history'])
@@ -1498,7 +1743,7 @@ elif tab_selection == "Search Patient Records":
                             gender=new_gender,
                             contact_number=new_contact,
                             department=new_dept,
-                            chief_complaint=new_chief,
+                            chief_complaint=updated_chief_complaint,
                             history_presenting_illness=new_hpi,
                             past_history=new_past,
                             personal_history=new_pers,
@@ -1525,7 +1770,6 @@ elif tab_selection == "Prescription Writing":
         st.stop()
 
     # Provide placeholders for the final prescription structure
-    # we expect JSON with: diagnosis, drugs (list of dicts), tests (list of dicts), follow_up (dict)
     if "prescription" not in st.session_state:
         st.session_state["prescription"] = {
             "diagnosis": "",
@@ -1587,7 +1831,7 @@ elif tab_selection == "Prescription Writing":
     # PDF generation function
     def create_pdf(data):
         """
-        Build a PDF with test & follow-up info in the new structured format.
+        Build a PDF with test & follow-up info in structured format.
         """
         pdf_buffer = io.BytesIO()
         doc = SimpleDocTemplate(
@@ -1652,7 +1896,7 @@ elif tab_selection == "Prescription Writing":
         pdf_buffer.close()
         return pdf_value
 
-    # Button to save and/or generate PDF
+    # Button to save/generate PDF
     if st.button("Save Prescription"):
         try:
             # Attempt to parse user-edited JSON
@@ -1663,7 +1907,6 @@ elif tab_selection == "Prescription Writing":
             st.error(f"Invalid JSON in one of the fields: {e}")
             st.stop()
 
-        # Update in session
         new_prescription = {
             "diagnosis": diagnosis.strip(),
             "drugs": updated_drugs,
