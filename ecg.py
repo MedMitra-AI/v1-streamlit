@@ -20,7 +20,7 @@ from openai import OpenAI
 AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
 AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
 AWS_REGION = st.secrets["AWS_REGION"]
-S3_BUCKET_NAME = st.secrets["AWS_BUCKET_NAME"]
+S3_BUCKET_NAME = st.secrets["S3_BUCKET_NAME"]
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 client = OpenAI(api_key=OPENAI_API_KEY)
 
