@@ -17,12 +17,12 @@ from openai import OpenAI
 # S3_BUCKET_NAME = "ecg--images-mgumst"  # Replace with your bucket name
 
 
-aws_access_key_id = st.secrets["AWS_ACCESS_KEY_ID"]
-aws_secret_access_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
-aws_region = st.secrets["AWS_REGION"]
-bucket_name = st.secrets["AWS_BUCKET_NAME"]
-openai_key = st.secrets["OPENAI_API_KEY"]
-client = OpenAI(api_key=openai_key)
+AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
+AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
+AWS_REGION = st.secrets["AWS_REGION"]
+S3_BUCKET_NAME = st.secrets["AWS_BUCKET_NAME"]
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 FIXED_PROMPT = (
     "This is an image of an ECG. Please list along with reason if the image exhibits signs "
